@@ -22,7 +22,7 @@ class DBManager(object):
         self.conn = sqlite3.connect("Database_Dambreak.db")
         self.conn.execute("CREATE TABLE IF NOT EXISTS Comandos ('Aceleração' 'REAL', 'Velocidade' 'REAL', 'Posição' 'REAL', 'Inclinação' 'REAL')")
         self.conn.execute("CREATE TABLE IF NOT EXISTS MacroNames ('Name' 'TEXT')")
-        self.conn.execute("CREATE TABLE IF NOT EXISTS Cache ('Precisão' 'TEXT', 'Aceleração' 'REAL', 'Velocidade' 'REAL', 'Posição' 'REAL', 'Inclinação' 'REAL')")
+        self.conn.execute("CREATE TABLE IF NOT EXISTS Cache ('Precisão' 'TEXT', 'Aceleração' 'REAL', 'Velocidade' 'REAL', 'Posição' 'REAL', 'Inclinação' 'REAL', 'Port' 'TEXT')")
         self.conn.execute("CREATE TABLE IF NOT EXISTS Macro1 ('Aceleração' 'REAL', 'Velocidade' 'REAL', 'Posição' 'REAL', 'Inclinação' 'REAL', 'Atraso' 'REAL', 'Ciclos' 'INTEGER')")
         self.conn.execute("CREATE TABLE IF NOT EXISTS Macro2 ('Aceleração' 'REAL', 'Velocidade' 'REAL', 'Posição' 'REAL', 'Inclinação' 'REAL', 'Atraso' 'REAL', 'Ciclos' 'INTEGER')")
         self.conn.execute("CREATE TABLE IF NOT EXISTS Macro3 ('Aceleração' 'REAL', 'Velocidade' 'REAL', 'Posição' 'REAL', 'Inclinação' 'REAL', 'Atraso' 'REAL', 'Ciclos' 'INTEGER')")
@@ -145,16 +145,22 @@ class DBManager(object):
         cursor.execute("UPDATE Cache SET Inclinação = (?)", [(value)])
         self.conn.commit()
 
+    def UpdateCache_Port(self, value):
+        cursor = self.conn.cursor()
+        cursor.execute("UPDATE Cache SET Port = (?)", [(value)])
+        self.conn.commit()
+
     def GetCache_Precisao(self):
         retorno = "1/32"  # Padrão
         cursor = self.conn.cursor()
         retorno = list(cursor.execute("SELECT Precisão FROM Cache"))
         if not len(retorno)>0:
-            cursor.execute("INSERT INTO Cache VALUES (?,?,?,?,?)", [("1/32"),
+            cursor.execute("INSERT INTO Cache VALUES (?,?,?,?,?,?)", [("1/32"),
                                                                      self.HMI.MinAceleracao,
                                                                      self.HMI.MinVelocidade,
                                                                      self.HMI.MinPosicao,
-                                                                     self.HMI.MinInclinacao])
+                                                                     self.HMI.MinInclinacao,
+                                                                     ''])
             retorno = "1/32"  # Padrão
         else:
             retorno = retorno[0][0]
@@ -179,3 +185,8 @@ class DBManager(object):
         cursor = self.conn.cursor()
         retorno = list(cursor.execute("SELECT Inclinação FROM Cache"))
         return retorno[0][0]
+
+    def GetCache_Port(self):
+        cursor = self.conn.cursor()
+        retorno = list(cursor.execute("SELECT Port FROM Cache"))
+        return str(retorno[0][0])

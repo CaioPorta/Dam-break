@@ -94,6 +94,8 @@ class IHMmain(QWidget):
         self.Senha = "0000"
         self.MacroRunning = False
         self.filedialogIsOpen = False
+        
+        self.ArduinoComm.Connect(self.DBManager.GetCache_Port())
 
         # Criar Página HMI
         self.GLayout = QGridLayout()
@@ -1822,12 +1824,18 @@ class IHMmain(QWidget):
                     Ports.append(port)
                 except (OSError, serial.SerialException):
                     pass
-
-            port, done = QInputDialog.getItem(self, 'Porta', 'Porta onde se encontra o Arduino:', Ports, editable=False)
-            if done:
-                self.ArduinoComm.Connect(port)
-                if self.ArduinoComm.Connected == False:
-                    QMessageBox.warning(self, 'Erro', 'Impossível se conectar ao arduino.')
+                
+            if len(Ports) > 0:
+                port, done = QInputDialog.getItem(self, 'Porta', 'Porta onde se encontra o Arduino:', Ports, editable=False)
+                if done:
+                    self.ArduinoComm.Connect(port)
+                    if self.ArduinoComm.Connected == False:
+                        QMessageBox.warning(self, 'Erro', 'Impossível se conectar ao arduino.')
+                    else:
+                        # Save in DB last port used
+                        self.DBManager.UpdateCache_Port(port)
+            else:
+                QMessageBox.warning(self, 'Erro', 'Nenhuma porta serial detectada.')
 
     def OnButtonReleased(self, ButtonReleased):
             self.AbortThread = True
