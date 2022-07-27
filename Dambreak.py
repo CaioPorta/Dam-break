@@ -1,11 +1,12 @@
 # -*- coding: utf-8 -*-
 """
 Created on Tue Nov 23 15:49:21 2021
-@author: caiop
+@author: CaioPorta
 
 Feito para Professor Geraldo de Freitas Maciel
 UNESP - FEIS
 """
+# This is the Main file. You may run this file.
 #%% Initiate HMI
 from PyQt5.QtGui import *
 from PyQt5.QtWidgets import *
