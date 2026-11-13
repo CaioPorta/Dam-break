@@ -78,3 +78,23 @@ class ArduinoComm(object):
     def Close(self):
         try: self.ArduinoComm.close()
         except: pass
+
+    # -----------------------------------------------------------------------
+    # Pythonic snake_case aliases (PEP 8)
+    # -----------------------------------------------------------------------
+
+    @property
+    def connected(self):
+        return self.Connected
+
+    def connect(self, port):
+        return self.Connect(port)
+
+    def send_command(self, comando):
+        return self.SendCommand(comando)
+
+    def wait_response(self, timeout=10):
+        return self.WaitResponse(timeout)
+
+    def close(self):
+        return self.Close()

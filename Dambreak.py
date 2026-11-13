@@ -1,2007 +1,1232 @@
 # -*- coding: utf-8 -*-
 """
-Created on Tue Nov 23 15:49:21 2021
-@author: Caio Moreira Porta
+Dam Break Control Application - Main Interface
 
-Feito para Professor Geraldo de Freitas Maciel
-UNESP - FEIS
+Created for Professor Geraldo de Freitas Maciel - UNESP/FEIS
+Author: Caio Porta (CaioPorta)
 """
-# This is the Main file. You may run this file.
-#%% Initiate HMI
-from PyQt5.QtGui import *
-from PyQt5.QtWidgets import *
-from PyQt5.QtCore import *
 
+# ---------------------------------------------------------------------------
+# Standard library
+# ---------------------------------------------------------------------------
+import sys
+import os
+import glob
+import csv
+import tkinter as tk
+from tkinter import filedialog
 from time import sleep
 
-import sys
-import ctypes
-import csv
+# ---------------------------------------------------------------------------
+# PyQt5
+# ---------------------------------------------------------------------------
+from PyQt5.QtGui import (
+    QFont, QBrush, QColor, QIcon, QCursor, QKeyEvent,
+)
+from PyQt5.QtWidgets import (
+    QApplication, QWidget, QLabel, QPushButton, QLineEdit,
+    QComboBox, QTableWidget, QTableWidgetItem, QRadioButton,
+    QButtonGroup, QGridLayout, QVBoxLayout, QHBoxLayout,
+    QMessageBox, QInputDialog, QAbstractScrollArea, QSizePolicy,
+)
+from PyQt5.QtCore import Qt, QEvent, QThread, QSize
 
-import sys
-import glob
-import serial
-
-import tkinter
-from tkinter import filedialog
-
+# ---------------------------------------------------------------------------
+# Local modules
+# ---------------------------------------------------------------------------
 from DBManager import DBManager
 from ArduinoComm import ArduinoComm
 from WorkerThread import WorkerThread
+from config import (
+    APP_VERSION_INFO, PARAM_LIMITS, PRECISION_OPTIONS, DEFAULT_PRECISION,
+    SCREEN_RATIOS, THEMES, FONTS, ICON_PATH, SAVE_ICON, ARDUINO_ICON,
+    INFO_ICON, DEFAULT_MACRO_NAMES, PASSWORD, ARDUINO_BAUDRATE,
+    ARDUINO_TIMEOUT, THREAD_INTERVAL, MACRO_TABLE_COLUMNS, INPUT_MASKS,
+)
+from ui_components import (
+    ThemeManager,
+    create_button,
+    create_label,
+    create_textbox,
+    create_precision_radios,
+    build_control_row,
+    setup_macro_table,
+    setup_history_table,
+)
 
+
+# ---------------------------------------------------------------------------
+# Helper: clamp a value to a range
+# ---------------------------------------------------------------------------
+def _clamp(value, min_val, max_val):
+    """Return *value* clamped to the [*min_val*, *max_val*] range."""
+    return max(min_val, min(value, max_val))
+
+
+# ---------------------------------------------------------------------------
+# Helper: find the closest value in a list
+# ---------------------------------------------------------------------------
+def _closest(lst, target):
+    """Return the element in *lst* closest to *target*."""
+    return lst[min(range(len(lst)), key=lambda i: abs(lst[i] - target))]
+
+
+# ---------------------------------------------------------------------------
+# Main HMI class
+# ---------------------------------------------------------------------------
 class IHMmain(QWidget):
-    def __init__(self):
-        self.APPVersion = "Controle de Dambreak\nVersão Alpha 0.0.1\nÚltima modificação: 03/12/2021"
-        super().__init__()
+    """Main interface for the Dam Break control system."""
+
+    # ------------------------------------------------------------------
+    # Initialization
+    # ------------------------------------------------------------------
+    def __init__(self, parent=None):
+        super().__init__(parent)
         self.setObjectName("IHM")
 
-        self.DBManager = DBManager(self)
-        self.ArduinoComm = ArduinoComm(self)
+        # -- App metadata --
+        self.app_version_info = APP_VERSION_INFO
 
-        user32 = ctypes.windll.user32
-        screensize = user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
-        self.screen_height = screensize[1] # FHD
-        self.screen_width = screensize[0] # FHD
-        self.font8 = QFont('Times New Roman', 8)
-        self.font8.setBold(False)
-        self.font9 = QFont('Times New Roman', 9)
-        self.font9.setBold(False)
-        self.font10 = QFont('Times New Roman', 10)
-        self.font10.setBold(False)
-        self.font12 = QFont('Times New Roman', 12)
-        self.font12.setBold(False)
-        self.font14 = QFont('Times New Roman', 14)
-        self.font16 = QFont('Times New Roman', 16)
-        self.font18 = QFont('Times New Roman', 18)
-        self.font20 = QFont('Times New Roman', 20, QFont.Bold)
-        self.font22 = QFont('Times New Roman', 22, QFont.Bold)
-        self.font24 = QFont('Times New Roman', 24)
-        self.font26 = QFont('Cooper Black', 26, QFont.Bold)
-        self.font28 = QFont('Cooper Black', 28, QFont.Bold)
-        self.font30 = QFont('Cooper Black', 30, QFont.Bold)
+        # -- Subsystems --
+        self.db_manager = DBManager(self)
+        self.arduino_comm = ArduinoComm(self)
+        self.theme_manager = ThemeManager(self)
 
-        self.setWindowTitle("Dambreak")
-        self.setWindowIcon(QIcon(".\images\Dambreak IHM icon.png"))
-        self.setAutoFillBackground(True)
-        self.setMinimumSize(QSize(int(self.screen_width*0.55), int(self.screen_height*0.75)))
-        self.showMaximized()
+        # -- Screen metrics (set in _init_screen_metrics) --
+        self.screen_width = 0
+        self.screen_height = 0
 
+        # -- Font cache --
+        self._fonts = {}
+
+        # -- Parameter state --
+        self.acceleration = 0.0
+        self.velocity = 0.0
+        self.position = 0.0
+        self.inclination = 0.0
+
+        self.max_acceleration = PARAM_LIMITS["acceleration"]["max"]
+        self.min_acceleration = PARAM_LIMITS["acceleration"]["min"]
+        self.max_velocity = PARAM_LIMITS["velocity"]["max"]
+        self.min_velocity = PARAM_LIMITS["velocity"]["min"]
+        self.max_position = PARAM_LIMITS["position"]["max"]
+        self.min_position = PARAM_LIMITS["position"]["min"]
+        self.max_inclination = PARAM_LIMITS["inclination"]["max"]
+        self.min_inclination = PARAM_LIMITS["inclination"]["min"]
+
+        self.precision = DEFAULT_PRECISION
+        self.precision_acceleration = 0.1
+        self.precision_velocity = 0.1
+        self.precision_position = 0.1
+        self.precision_inclination = 0.5
+
+        # -- UI state --
+        self.macro_running = False
+        self.file_dialog_open = False
+        self.recording_mode = "normal"  # "normal" or "Gravar"
+        self.password = PASSWORD
+        self.background_style = "Bright"
+
+        # -- Worker thread control --
+        self.abort_thread = False
+
+        # -- Macro editor data --
+        self.macro_data = []
+        self.macro_names = self.db_manager.get_macro_names()
+
+        # -- Widget references (populated by _build_ui) --
+        self._widgets = {}
+
+        # -- Initialize screen metrics --
+        self._init_screen_metrics()
+
+        # -- Build UI --
+        self._setup_base_window()
+        self._build_ui()
+
+        # -- Restore cached values --
+        self._restore_cached_values()
+
+        # -- Connect Arduino to last used port --
+        last_port = self.db_manager.get_cache_port()
+        if last_port:
+            self.arduino_comm.connect(last_port)
+
+        # -- Install event filter for resize handling --
         self.installEventFilter(self)
 
-        # Variáveis iniciais
-        self.backgroundStyle = 'Bright'
-        self.GravarMacro = "normal" # Faz App iniciar na pagina inicial
-        self.MaxAceleracao = 1. # (mm/s²)
-        self.MinAceleracao = 0. # (mm/s²)
-        self.MaxVelocidade = 10. # (mm/s)
-        self.MinVelocidade = 0. # (mm/s)
-        self.MaxPosicao = 300. # (mm)
-        self.MinPosicao = 0. # (mm)
-        self.MaxInclinacao = 20. # (°)
-        self.MinInclinacao = 0. # (°)
-
-        self.Precisao = self.DBManager.GetCache_Precisao()
-        self.Aceleracao = self.DBManager.GetCache_Aceleracao()
-        self.Velocidade = self.DBManager.GetCache_Velocidade()
-        self.Posicao = self.DBManager.GetCache_Posicao()
-        self.Inclinacao = self.DBManager.GetCache_Inclinacao()
-
-        self.PrecisaoAceleracao = 0.1 # (mm/s²)
-        self.PrecisaoVelocidade = 0.1 # (mm/s)
-        self.PrecisaoPosicao = 0.1 # (mm)
-        self.PrecisaoInclinacao = 0.5 # (°)
-
-        self.Senha = "0000"
-        self.MacroRunning = False
-        self.filedialogIsOpen = False
-        
-        self.ArduinoComm.Connect(self.DBManager.GetCache_Port())
-
-        # Criar Página HMI
-        self.GLayout = QGridLayout()
-        self.setLayout(self.GLayout)
-
-        self.CreatePageMain()
-
-    def CreatePageMain(self):
-        #%% Gestão do tema
-        if self.backgroundStyle == 'Dark':
-            BackgroundColor = 'black'
-            BackgroundColor2 = 'gray'
-            FontColor = 'white'
-        else:
-            BackgroundColor = 'gray'
-            BackgroundColor2 = 'white'
-            FontColor = 'black'
-        background = self.palette()
-        background.setColor(self.backgroundRole(), QColor(BackgroundColor))
-        self.setPalette(background)
-
-        self.Background_1 = QLabel()
-        self.Background_1.setStyleSheet("background-color: "+BackgroundColor)
-
-        #%% Gestão dos widgets (Label, Button, LineEdit, Table)
-        self.Label_Titulo = QLabel()
-        self.Label_Titulo.setAlignment(Qt.AlignCenter)
-        self.Label_Titulo.setText('Controle de Dambreak')
-        self.Label_Titulo.setStyleSheet('color: '+FontColor)
-        self.Label_Titulo.setFont(self.font30)
-        self.Label_Titulo.setFixedHeight(int(self.screen_height/20))
-
-        self.Label_1 = QLabel()
-        self.Label_1.setAlignment(Qt.AlignCenter)
-        self.Label_1.setText('Macros')
-        self.Label_1.setStyleSheet('color: '+FontColor)
-        self.Label_1.setFont(self.font24)
-
-        self.Label_2 = QLabel()
-        self.Label_2.setAlignment(Qt.AlignCenter)
-        self.Label_2.setText('Comandos manuais')
-        self.Label_2.setStyleSheet('color: '+FontColor)
-        self.Label_2.setFont(self.font24)
-
-        self.Label_3 = QLabel()
-        self.Label_3.setAlignment(Qt.AlignCenter)
-        self.Label_3.setText('Status')
-        self.Label_3.setStyleSheet('color: '+FontColor)
-        self.Label_3.setFont(self.font24)
-
-        self.Label_4 = QLabel()
-        self.Label_4.setAlignment(Qt.AlignCenter)
-        self.Label_4.setText('Aceleração máx')
-        self.Label_4.setStyleSheet('color: '+FontColor)
-        self.Label_4.setFont(self.font16)
-
-        self.Label_5 = QLabel()
-        self.Label_5.setAlignment(Qt.AlignCenter)
-        self.Label_5.setText('Valocidade máx')
-        self.Label_5.setStyleSheet('color: '+FontColor)
-        self.Label_5.setFont(self.font16)
-
-        self.Label_6 = QLabel()
-        self.Label_6.setAlignment(Qt.AlignCenter)
-        self.Label_6.setText('Ir para posição')
-        self.Label_6.setStyleSheet('color: '+FontColor)
-        self.Label_6.setFont(self.font16)
-
-        self.Label_7 = QLabel()
-        self.Label_7.setAlignment(Qt.AlignCenter)
-        self.Label_7.setText('Ir para inclinação')
-        self.Label_7.setStyleSheet('color: '+FontColor)
-        self.Label_7.setFont(self.font16)
-
-        self.Label_8 = QLabel()
-        self.Label_8.setAlignment(Qt.AlignCenter)
-        self.Label_8.setText('Posição atual\n'+str(self.Posicao)+'mm')
-        self.Label_8.setStyleSheet('color: '+FontColor)
-        self.Label_8.setFont(self.font16)
-
-        self.Label_9 = QLabel()
-        self.Label_9.setAlignment(Qt.AlignCenter)
-        self.Label_9.setText('Inclinação atual\n'+str(self.Inclinacao)+'°')
-        self.Label_9.setStyleSheet('color: '+FontColor)
-        self.Label_9.setFont(self.font16)
-
-        self.Label_10 = QLabel('')
-        self.Label_10.setFixedHeight(int(self.screen_height/30))
-
-        self.Label_11 = QLabel('')
-        self.Label_11.setFixedHeight(int(self.screen_height/30))
-
-        self.Label_12 = QLabel()
-        self.Label_12.setAlignment(Qt.AlignCenter)
-        self.Label_12.setText('Histórico de comandos')
-        self.Label_12.setStyleSheet('color: '+FontColor)
-        self.Label_12.setFont(self.font16)
-
-        self.Label_13 = QLabel()
-        self.Label_13.setAlignment(Qt.AlignCenter)
-        self.Label_13.setText('Precisão')
-        self.Label_13.setStyleSheet('color: '+FontColor)
-        self.Label_13.setFont(self.font16)
-
-        self.Button_Tema = QPushButton()
-        self.Button_Tema.setFixedWidth(int(self.screen_width/15))
-        self.Button_Tema.setCursor(QCursor(Qt.PointingHandCursor))
-        self.Button_Tema.setStyleSheet("background-color: "+BackgroundColor+"; border: none; outline: none;")
-        self.Button_Tema.pressed.connect(lambda: self.OnButtonPressed('Mudar tema'))
-        self.Button_Tema.setIconSize(QSize(int(self.frameGeometry().height()/15),int(self.frameGeometry().height()/15)))
-        self.Button_Tema.setIcon(QIcon("./images/Dambreak IHM icon.png"))
-
-        MacroNames = self.DBManager.GetMacroNames()
-        self.Button_Macro1 = QPushButton(MacroNames[0])
-        self.Button_Macro1.setFont(self.font18)
-        self.Button_Macro1.setFixedSize(int(self.frameGeometry().height()*1/7),int(self.frameGeometry().height()*1/7))
-        self.Button_Macro1.setCursor(QCursor(Qt.PointingHandCursor))
-        self.Button_Macro1.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-        self.Button_Macro1.pressed.connect(lambda: self.OnButtonPressed('Macro1'))
-
-        self.Button_Macro2 = QPushButton(MacroNames[1])
-        self.Button_Macro2.setFont(self.font18)
-        self.Button_Macro2.setFixedSize(int(self.frameGeometry().height()*1/7),int(self.frameGeometry().height()*1/7))
-        self.Button_Macro2.setCursor(QCursor(Qt.PointingHandCursor))
-        self.Button_Macro2.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-        self.Button_Macro2.pressed.connect(lambda: self.OnButtonPressed('Macro2'))
-
-        self.Button_Macro3 = QPushButton(MacroNames[2])
-        self.Button_Macro3.setFont(self.font18)
-        self.Button_Macro3.setFixedSize(int(self.frameGeometry().height()*1/7),int(self.frameGeometry().height()*1/7))
-        self.Button_Macro3.setCursor(QCursor(Qt.PointingHandCursor))
-        self.Button_Macro3.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-        self.Button_Macro3.pressed.connect(lambda: self.OnButtonPressed('Macro3'))
-
-        self.Button_Macro4 = QPushButton(MacroNames[3])
-        self.Button_Macro4.setFont(self.font18)
-        self.Button_Macro4.setFixedSize(int(self.frameGeometry().height()*1/7),int(self.frameGeometry().height()*1/7))
-        self.Button_Macro4.setCursor(QCursor(Qt.PointingHandCursor))
-        self.Button_Macro4.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-        self.Button_Macro4.pressed.connect(lambda: self.OnButtonPressed('Macro4'))
-
-        self.Button_Macro5 = QPushButton(MacroNames[4])
-        self.Button_Macro5.setFont(self.font18)
-        self.Button_Macro5.setFixedSize(int(self.frameGeometry().height()*1/7),int(self.frameGeometry().height()*1/7))
-        self.Button_Macro5.setCursor(QCursor(Qt.PointingHandCursor))
-        self.Button_Macro5.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-        self.Button_Macro5.pressed.connect(lambda: self.OnButtonPressed('Macro5'))
-
-        self.Button_Macro6 = QPushButton(MacroNames[5])
-        self.Button_Macro6.setFont(self.font18)
-        self.Button_Macro6.setFixedSize(int(self.frameGeometry().height()*1/7),int(self.frameGeometry().height()*1/7))
-        self.Button_Macro6.setCursor(QCursor(Qt.PointingHandCursor))
-        self.Button_Macro6.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-        self.Button_Macro6.pressed.connect(lambda: self.OnButtonPressed('Macro6'))
-
-        self.Button_Macro7 = QPushButton(MacroNames[6])
-        self.Button_Macro7.setFont(self.font18)
-        self.Button_Macro7.setFixedSize(int(self.frameGeometry().height()*1/7),int(self.frameGeometry().height()*1/7))
-        self.Button_Macro7.setCursor(QCursor(Qt.PointingHandCursor))
-        self.Button_Macro7.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-        self.Button_Macro7.pressed.connect(lambda: self.OnButtonPressed('Macro7'))
-
-        self.Button_Macro8 = QPushButton(MacroNames[7])
-        self.Button_Macro8.setFont(self.font18)
-        self.Button_Macro8.setFixedSize(int(self.frameGeometry().height()*1/7),int(self.frameGeometry().height()*1/7))
-        self.Button_Macro8.setCursor(QCursor(Qt.PointingHandCursor))
-        self.Button_Macro8.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-        self.Button_Macro8.pressed.connect(lambda: self.OnButtonPressed('Macro8'))
-
-        self.Button_GravarMacro = QPushButton('Editar\nmacros')
-        self.Button_GravarMacro.setFont(self.font24)
-        self.Button_GravarMacro.adjustSize()
-        self.Button_GravarMacro.setFixedWidth(int(self.frameGeometry().width()/7))
-        self.Button_GravarMacro.setCursor(QCursor(Qt.PointingHandCursor))
-        self.Button_GravarMacro.setStyleSheet("background-color: "+BackgroundColor2+";border: none; outline: none;")
-        self.Button_GravarMacro.pressed.connect(lambda: self.OnButtonPressed('GravarMacro'))
-
-        self.Button_DeletarMacro = QPushButton('Deletar\nmacros')
-        self.Button_DeletarMacro.setFont(self.font24)
-        self.Button_DeletarMacro.adjustSize()
-        self.Button_DeletarMacro.setFixedWidth(int(self.frameGeometry().width()/7))
-        self.Button_DeletarMacro.setCursor(QCursor(Qt.PointingHandCursor))
-        self.Button_DeletarMacro.setStyleSheet("background-color: "+BackgroundColor2+"; color:border: none; outline: none;")
-        self.Button_DeletarMacro.pressed.connect(lambda: self.OnButtonPressed('DeletarMacro'))
-
-        self.Button_MaisAceleracao = QPushButton('+')
-        self.Button_MaisAceleracao.setFont(self.font14)
-        self.Button_MaisAceleracao.setCursor(QCursor(Qt.PointingHandCursor))
-        self.Button_MaisAceleracao.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-        self.Button_MaisAceleracao.pressed.connect(lambda: self.OnButtonPressed('MaisAceleracao'))
-        self.Button_MaisAceleracao.released.connect(lambda: self.OnButtonReleased('MaisAceleracao'))
-        self.Button_MaisAceleracao.setFixedWidth(int(self.frameGeometry().width()/20))
-
-        self.Button_MenosAceleracao = QPushButton('-')
-        self.Button_MenosAceleracao.setFont(self.font14)
-        self.Button_MenosAceleracao.setCursor(QCursor(Qt.PointingHandCursor))
-        self.Button_MenosAceleracao.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-        self.Button_MenosAceleracao.pressed.connect(lambda: self.OnButtonPressed('MenosAceleracao'))
-        self.Button_MenosAceleracao.released.connect(lambda: self.OnButtonReleased('MenosAceleracao'))
-        self.Button_MenosAceleracao.setFixedWidth(int(self.frameGeometry().width()/20))
-
-        self.Button_MaisVelocidade = QPushButton('+')
-        self.Button_MaisVelocidade.setFont(self.font14)
-        self.Button_MaisVelocidade.setCursor(QCursor(Qt.PointingHandCursor))
-        self.Button_MaisVelocidade.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-        self.Button_MaisVelocidade.pressed.connect(lambda: self.OnButtonPressed('MaisVelocidade'))
-        self.Button_MaisVelocidade.released.connect(lambda: self.OnButtonReleased('MaisVelocidade'))
-        self.Button_MaisVelocidade.setFixedWidth(int(self.frameGeometry().width()/20))
-
-        self.Button_MenosVelocidade = QPushButton('-')
-        self.Button_MenosVelocidade.setFont(self.font14)
-        self.Button_MenosVelocidade.setCursor(QCursor(Qt.PointingHandCursor))
-        self.Button_MenosVelocidade.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-        self.Button_MenosVelocidade.pressed.connect(lambda: self.OnButtonPressed('MenosVelocidade'))
-        self.Button_MenosVelocidade.released.connect(lambda: self.OnButtonReleased('MenosVelocidade'))
-        self.Button_MenosVelocidade.setFixedWidth(int(self.frameGeometry().width()/20))
-
-        self.Button_MaisPosicao = QPushButton('+')
-        self.Button_MaisPosicao.setFont(self.font14)
-        self.Button_MaisPosicao.setCursor(QCursor(Qt.PointingHandCursor))
-        self.Button_MaisPosicao.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-        self.Button_MaisPosicao.pressed.connect(lambda: self.OnButtonPressed('MaisPosicao'))
-        self.Button_MaisPosicao.released.connect(lambda: self.OnButtonReleased('MaisPosicao'))
-        self.Button_MaisPosicao.setFixedWidth(int(self.frameGeometry().width()/20))
-
-        self.Button_MenosPosicao = QPushButton('-')
-        self.Button_MenosPosicao.setFont(self.font14)
-        self.Button_MenosPosicao.setCursor(QCursor(Qt.PointingHandCursor))
-        self.Button_MenosPosicao.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-        self.Button_MenosPosicao.pressed.connect(lambda: self.OnButtonPressed('MenosPosicao'))
-        self.Button_MenosPosicao.released.connect(lambda: self.OnButtonReleased('MenosPosicao'))
-        self.Button_MenosPosicao.setFixedWidth(int(self.frameGeometry().width()/20))
-
-        self.Button_MaisInclinacao = QPushButton('+')
-        self.Button_MaisInclinacao.setFont(self.font14)
-        self.Button_MaisInclinacao.setCursor(QCursor(Qt.PointingHandCursor))
-        self.Button_MaisInclinacao.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-        self.Button_MaisInclinacao.pressed.connect(lambda: self.OnButtonPressed('MaisInclinacao'))
-        self.Button_MaisInclinacao.released.connect(lambda: self.OnButtonReleased('MaisInclinacao'))
-        self.Button_MaisInclinacao.setFixedWidth(int(self.frameGeometry().width()/20))
-
-        self.Button_MenosInclinacao = QPushButton('-')
-        self.Button_MenosInclinacao.setFont(self.font14)
-        self.Button_MenosInclinacao.setCursor(QCursor(Qt.PointingHandCursor))
-        self.Button_MenosInclinacao.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-        self.Button_MenosInclinacao.pressed.connect(lambda: self.OnButtonPressed('MenosInclinacao'))
-        self.Button_MenosInclinacao.released.connect(lambda: self.OnButtonReleased('MenosInclinacao'))
-        self.Button_MenosInclinacao.setFixedWidth(int(self.frameGeometry().width()/20))
-
-        self.Button_MaxAceleracao = QPushButton('Max')
-        self.Button_MaxAceleracao.setFont(self.font14)
-        self.Button_MaxAceleracao.setCursor(QCursor(Qt.PointingHandCursor))
-        self.Button_MaxAceleracao.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-        self.Button_MaxAceleracao.pressed.connect(lambda: self.OnButtonPressed('MaxAceleracao'))
-        self.Button_MaxAceleracao.setFixedWidth(int(self.frameGeometry().width()/15))
-
-        self.Button_MedAceleracao = QPushButton('Med')
-        self.Button_MedAceleracao.setFont(self.font14)
-        self.Button_MedAceleracao.setCursor(QCursor(Qt.PointingHandCursor))
-        self.Button_MedAceleracao.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-        self.Button_MedAceleracao.pressed.connect(lambda: self.OnButtonPressed('MedAceleracao'))
-        self.Button_MedAceleracao.setFixedWidth(int(self.frameGeometry().width()/15))
-
-        self.Button_MinAceleracao = QPushButton('Min')
-        self.Button_MinAceleracao.setFont(self.font14)
-        self.Button_MinAceleracao.setCursor(QCursor(Qt.PointingHandCursor))
-        self.Button_MinAceleracao.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-        self.Button_MinAceleracao.pressed.connect(lambda: self.OnButtonPressed('MinAceleracao'))
-        self.Button_MinAceleracao.setFixedWidth(int(self.frameGeometry().width()/15))
-
-        self.Button_MaxVelocidade = QPushButton('Max')
-        self.Button_MaxVelocidade.setFont(self.font14)
-        self.Button_MaxVelocidade.setCursor(QCursor(Qt.PointingHandCursor))
-        self.Button_MaxVelocidade.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-        self.Button_MaxVelocidade.pressed.connect(lambda: self.OnButtonPressed('MaxVelocidade'))
-        self.Button_MaxVelocidade.setFixedWidth(int(self.frameGeometry().width()/15))
-
-        self.Button_MedVelocidade = QPushButton('Med')
-        self.Button_MedVelocidade.setFont(self.font14)
-        self.Button_MedVelocidade.setCursor(QCursor(Qt.PointingHandCursor))
-        self.Button_MedVelocidade.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-        self.Button_MedVelocidade.pressed.connect(lambda: self.OnButtonPressed('MedVelocidade'))
-        self.Button_MedVelocidade.setFixedWidth(int(self.frameGeometry().width()/15))
-
-        self.Button_MinVelocidade = QPushButton('Min')
-        self.Button_MinVelocidade.setFont(self.font14)
-        self.Button_MinVelocidade.setCursor(QCursor(Qt.PointingHandCursor))
-        self.Button_MinVelocidade.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-        self.Button_MinVelocidade.pressed.connect(lambda: self.OnButtonPressed('MinVelocidade'))
-        self.Button_MinVelocidade.setFixedWidth(int(self.frameGeometry().width()/15))
-
-        self.Button_MaxPosicao = QPushButton('Max')
-        self.Button_MaxPosicao.setFont(self.font14)
-        self.Button_MaxPosicao.setCursor(QCursor(Qt.PointingHandCursor))
-        self.Button_MaxPosicao.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-        self.Button_MaxPosicao.pressed.connect(lambda: self.OnButtonPressed('MaxPosicao'))
-        self.Button_MaxPosicao.setFixedWidth(int(self.frameGeometry().width()/15))
-
-        self.Button_MedPosicao = QPushButton('Med')
-        self.Button_MedPosicao.setFont(self.font14)
-        self.Button_MedPosicao.setCursor(QCursor(Qt.PointingHandCursor))
-        self.Button_MedPosicao.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-        self.Button_MedPosicao.pressed.connect(lambda: self.OnButtonPressed('MedPosicao'))
-        self.Button_MedPosicao.setFixedWidth(int(self.frameGeometry().width()/15))
-
-        self.Button_MinPosicao = QPushButton('Min')
-        self.Button_MinPosicao.setFont(self.font14)
-        self.Button_MinPosicao.setCursor(QCursor(Qt.PointingHandCursor))
-        self.Button_MinPosicao.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-        self.Button_MinPosicao.pressed.connect(lambda: self.OnButtonPressed('MinPosicao'))
-        self.Button_MinPosicao.setFixedWidth(int(self.frameGeometry().width()/15))
-
-        self.Button_MaxInclinacao = QPushButton('Max')
-        self.Button_MaxInclinacao.setFont(self.font14)
-        self.Button_MaxInclinacao.setCursor(QCursor(Qt.PointingHandCursor))
-        self.Button_MaxInclinacao.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-        self.Button_MaxInclinacao.pressed.connect(lambda: self.OnButtonPressed('MaxInclinacao'))
-        self.Button_MaxInclinacao.setFixedWidth(int(self.frameGeometry().width()/15))
-
-        self.Button_MedInclinacao = QPushButton('Med')
-        self.Button_MedInclinacao.setFont(self.font14)
-        self.Button_MedInclinacao.setCursor(QCursor(Qt.PointingHandCursor))
-        self.Button_MedInclinacao.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-        self.Button_MedInclinacao.pressed.connect(lambda: self.OnButtonPressed('MedInclinacao'))
-        self.Button_MedInclinacao.setFixedWidth(int(self.frameGeometry().width()/15))
-
-        self.Button_MinInclinacao = QPushButton('Min')
-        self.Button_MinInclinacao.setFont(self.font14)
-        self.Button_MinInclinacao.setCursor(QCursor(Qt.PointingHandCursor))
-        self.Button_MinInclinacao.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-        self.Button_MinInclinacao.pressed.connect(lambda: self.OnButtonPressed('MinInclinacao'))
-        self.Button_MinInclinacao.setFixedWidth(int(self.frameGeometry().width()/15))
-
-        self.Button_Executar = QPushButton('Executar\ncomando')
-        self.Button_Executar.setFixedWidth(int(self.frameGeometry().width()/3))
-        self.Button_Executar.setFixedHeight(int(self.screen_height/10))
-        self.Button_Executar.setFont(self.font22)
-        self.Button_Executar.setCursor(QCursor(Qt.PointingHandCursor))
-        self.Button_Executar.setStyleSheet("background-color: green; border: none; outline: none;")
-        self.Button_Executar.pressed.connect(lambda: self.OnButtonPressed('Executar'))
-
-        self.Button_LimparDB = QPushButton()
-        self.Button_LimparDB.setFixedWidth(int(self.screen_width/15))
-        self.Button_LimparDB.setCursor(QCursor(Qt.PointingHandCursor))
-        self.Button_LimparDB.setStyleSheet("background-color: "+BackgroundColor+"; border: none; outline: none;")
-        self.Button_LimparDB.pressed.connect(lambda: self.OnButtonPressed('LimparDB'))
-        self.Button_LimparDB.setIconSize(QSize(int(self.frameGeometry().height()/20),int(self.frameGeometry().height()/20)))
-        self.Button_LimparDB.setIcon(QIcon("./images/Limpar DB.png"))
-
-        self.Button_DeletarAcao = QPushButton('Deletar\núltima ação')
-        self.Button_DeletarAcao.setFixedWidth(int(self.frameGeometry().width()/7))
-        self.Button_DeletarAcao.setFont(self.font22)
-        self.Button_DeletarAcao.setCursor(QCursor(Qt.PointingHandCursor))
-        self.Button_DeletarAcao.setStyleSheet("background-color: red; border: none; outline: none;")
-        self.Button_DeletarAcao.pressed.connect(lambda: self.OnButtonPressed('DeletarAcao'))
-
-        self.Button_RegistrarAcao = QPushButton('Registrar\núltima ação')
-        self.Button_RegistrarAcao.setFixedWidth(int(self.frameGeometry().width()/7))
-        self.Button_RegistrarAcao.setFont(self.font22)
-        self.Button_RegistrarAcao.setCursor(QCursor(Qt.PointingHandCursor))
-        self.Button_RegistrarAcao.setStyleSheet("background-color: green; border: none; outline: none;")
-        self.Button_RegistrarAcao.pressed.connect(lambda: self.OnButtonPressed('RegistrarAcao'))
-
-        self.Button_TestarMacro = QPushButton('Testar\nmacro')
-        self.Button_TestarMacro.setFixedWidth(int(self.frameGeometry().width()/7))
-        self.Button_TestarMacro.setFont(self.font22)
-        self.Button_TestarMacro.setCursor(QCursor(Qt.PointingHandCursor))
-        self.Button_TestarMacro.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-        self.Button_TestarMacro.pressed.connect(lambda: self.OnButtonPressed('TestarMacro'))
-
-        self.Button_RegistrarMacro = QPushButton('Gravar\nmacro')
-        self.Button_RegistrarMacro.setFixedWidth(int(self.frameGeometry().width()/7))
-        self.Button_RegistrarMacro.setFont(self.font22)
-        self.Button_RegistrarMacro.setCursor(QCursor(Qt.PointingHandCursor))
-        self.Button_RegistrarMacro.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-        self.Button_RegistrarMacro.pressed.connect(lambda: self.OnButtonPressed('RegistrarMacro'))
-
-        self.Button_CancelarMacro = QPushButton('Cancelar\ngravação')
-        self.Button_CancelarMacro.setFixedWidth(int(self.frameGeometry().width()/7))
-        self.Button_CancelarMacro.setFont(self.font22)
-        self.Button_CancelarMacro.setCursor(QCursor(Qt.PointingHandCursor))
-        self.Button_CancelarMacro.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-        self.Button_CancelarMacro.pressed.connect(lambda: self.OnButtonPressed('CancelarMacro'))
-
-        self.Button_VersionInfo = QPushButton()
-        self.Button_VersionInfo.pressed.connect(lambda: QMessageBox.about(self,'Informações da versão do APP', self.APPVersion))
-        self.Button_VersionInfo.setIcon(QIcon("./images/Info.png"))
-        self.Button_VersionInfo.setCursor(QCursor(Qt.PointingHandCursor))
-        self.Button_VersionInfo.setStyleSheet("background-color: none; border: none; outline: none;")
-
-        self.Button_ArduinoConnect = QPushButton()
-        self.Button_ArduinoConnect.pressed.connect(lambda: self.OnButtonPressed('ArduinoConnect'))
-        self.Button_ArduinoConnect.setIcon(QIcon("./images/arduino-logo.png"))
-        self.Button_ArduinoConnect.setCursor(QCursor(Qt.PointingHandCursor))
-        self.Button_ArduinoConnect.setStyleSheet("background-color: none; border: none; outline: none;")
-
-        self.TextBox_Aceleracao = QLineEdit(str(self.Aceleracao))
-        self.TextBox_Aceleracao.setFont(self.font12)
-        self.TextBox_Aceleracao.setEnabled(False)
-        self.TextBox_Aceleracao.setFixedWidth(int(self.frameGeometry().width()/10))
-        self.TextBox_Aceleracao.setInputMask("99.9mm/s²")
-        self.TextBox_Aceleracao.setAlignment(Qt.AlignRight)
-        self.TextBox_Aceleracao.setStyleSheet("background-color: "+BackgroundColor2+"; color: black; border: none; outline: none;")
-        self.TextBox_Aceleracao.textChanged[str].connect(self.OnValueChanged_Aceleracao)
-
-        self.TextBox_Velocidade = QLineEdit(str(self.Velocidade))
-        self.TextBox_Velocidade.setFont(self.font12)
-        self.TextBox_Velocidade.setEnabled(False)
-        self.TextBox_Velocidade.setFixedWidth(int(self.frameGeometry().width()/10))
-        self.TextBox_Velocidade.setInputMask("99.9mm/s")
-        self.TextBox_Velocidade.setAlignment(Qt.AlignRight)
-        self.TextBox_Velocidade.setStyleSheet("background-color: "+BackgroundColor2+"; color: black; border: none; outline: none;")
-        self.TextBox_Velocidade.textChanged[str].connect(self.OnValueChanged_Velocidade)
-
-        self.TextBox_Posicao = QLineEdit(str(self.Posicao))
-        self.TextBox_Posicao.setFont(self.font12)
-        self.TextBox_Posicao.setEnabled(False)
-        self.TextBox_Posicao.setFixedWidth(int(self.frameGeometry().width()/10))
-        self.TextBox_Posicao.setInputMask("999.9mm")
-        self.TextBox_Posicao.setAlignment(Qt.AlignRight)
-        self.TextBox_Posicao.setStyleSheet("background-color: "+BackgroundColor2+"; color: black; border: none; outline: none;")
-        self.TextBox_Posicao.textChanged[str].connect(self.OnValueChanged_Posicao)
-
-        self.TextBox_Inclinacao = QLineEdit(str(self.Inclinacao))
-        self.TextBox_Inclinacao.setFont(self.font12)
-        self.TextBox_Inclinacao.setEnabled(False)
-        self.TextBox_Inclinacao.setFixedWidth(int(self.frameGeometry().width()/10))
-        self.TextBox_Inclinacao.setInputMask("99.9°")
-        self.TextBox_Inclinacao.setAlignment(Qt.AlignRight)
-        self.TextBox_Inclinacao.setStyleSheet("background-color: "+BackgroundColor2+"; color: black; border: none; outline: none;")
-        self.TextBox_Inclinacao.textChanged[str].connect(self.OnValueChanged_Inclinacao)
-
-        self.TextBox_Ciclos = QLineEdit("1")
-        self.TextBox_Ciclos.setFont(self.font14)
-        self.TextBox_Ciclos.setFixedWidth(int(self.frameGeometry().width()/7))
-        self.TextBox_Ciclos.setInputMask("99 ciclos")
-        self.TextBox_Ciclos.setAlignment(Qt.AlignRight)
-        self.TextBox_Ciclos.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-        self.TextBox_Ciclos.textChanged[str].connect(self.OnValueChanged_Ciclos)
-
-        self.Checkbox_Precisao1 = QRadioButton("1")
-        self.Checkbox_Precisao1.toggled.connect(lambda:self.Checkbox_ChangedState("1"))
-
-        self.Checkbox_Precisao2 = QRadioButton("1/2")
-        self.Checkbox_Precisao2.toggled.connect(lambda:self.Checkbox_ChangedState("1/2"))
-
-        self.Checkbox_Precisao3 = QRadioButton("1/4")
-        self.Checkbox_Precisao3.toggled.connect(lambda:self.Checkbox_ChangedState("1/4"))
-
-        self.Checkbox_Precisao4 = QRadioButton("1/8")
-        self.Checkbox_Precisao4.toggled.connect(lambda:self.Checkbox_ChangedState("1/8"))
-
-        self.Checkbox_Precisao5 = QRadioButton("1/16")
-        self.Checkbox_Precisao5.toggled.connect(lambda:self.Checkbox_ChangedState("1/16"))
-
-        self.Checkbox_Precisao6 = QRadioButton("1/32")
-        self.Checkbox_Precisao6.toggled.connect(lambda:self.Checkbox_ChangedState("1/32"))
-
-        self.GroupCheckbox_Precisao = QButtonGroup()
-        self.GroupCheckbox_Precisao.addButton(self.Checkbox_Precisao1)
-        self.GroupCheckbox_Precisao.addButton(self.Checkbox_Precisao2)
-        self.GroupCheckbox_Precisao.addButton(self.Checkbox_Precisao3)
-        self.GroupCheckbox_Precisao.addButton(self.Checkbox_Precisao4)
-        self.GroupCheckbox_Precisao.addButton(self.Checkbox_Precisao5)
-        self.GroupCheckbox_Precisao.addButton(self.Checkbox_Precisao6)
-
-        if self.Precisao == "1": self.Checkbox_Precisao1.setChecked(True)
-        elif self.Precisao == "1/2": self.Checkbox_Precisao2.setChecked(True)
-        elif self.Precisao == "1/4": self.Checkbox_Precisao3.setChecked(True)
-        elif self.Precisao == "1/8": self.Checkbox_Precisao4.setChecked(True)
-        elif self.Precisao == "1/16": self.Checkbox_Precisao5.setChecked(True)
-        elif self.Precisao == "1/32": self.Checkbox_Precisao6.setChecked(True)
-
-        self.ComboBox_Macros = QComboBox()
-        self.ComboBox_Macros.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-        self.ComboBox_Macros.setFixedWidth(int(self.frameGeometry().width()*2/7))
-        self.edit = QLineEdit(self)
-        self.edit.setFont(self.font16)
-        self.edit.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-        self.edit.setAlignment(Qt.AlignCenter)
-        self.edit.returnPressed.connect(lambda: self.OnButtonPressed('ComboBox_Macros'))
-        self.ComboBox_Macros.setLineEdit(self.edit)
-        self.ComboBox_Macros.setFont(self.font16)
-        self.ComboBox_Macros.setCursor(QCursor(Qt.PointingHandCursor))
-        for MacroName in self.DBManager.GetMacroNames():
-            self.ComboBox_Macros.addItem(MacroName)
-
-        def DefinirGeometria_Table_Historico():
-            self.Table_Historico.setSizeAdjustPolicy(QAbstractScrollArea.AdjustToContents)
-            self.Table_Historico.setFixedWidth(int(self.frameGeometry().width()*0.3))
-            self.Table_Historico.setShowGrid(False)
-            self.Table_Historico.verticalHeader().hide()
-            self.Table_Historico.horizontalHeader().hide()
-            self.Table_Historico.setFont(self.font10)
-            self.Table_Historico.setColumnCount(1)
-
-        self.Table_Historico = QTableWidget()
-        DefinirGeometria_Table_Historico()
-        self.InsertDataInTable_Historio()
-
-        def DefinirGeometria_Table_Macro():
-            self.Table_Macro.setSizeAdjustPolicy(QAbstractScrollArea.AdjustToContents)
-            self.Table_Macro.setFixedWidth(int(self.frameGeometry().width()*2/7))
-            self.Table_Macro.setShowGrid(False)
-            self.Table_Macro.verticalHeader().hide()
-            self.Table_Macro.setFont(self.font10)
-            self.Table_Macro.setColumnCount(5)
-            self.Table_Macro.setHorizontalHeaderLabels(['h (mm)', 'v (mm/s)', 'a (mm/s²)', '\u03B1 (°)', 'Atraso (s)'])
-            self.Table_Macro.keyReleaseEvent = self.tableOnkeyReleaseEvent
-
-        self.Table_Macro = QTableWidget()
-        DefinirGeometria_Table_Macro()
-        self.InsertDataInTable_Macro()
-
-        #%% Gestão do layout
-        if self.GravarMacro == "Gravar":
-            self.Layout_Macros = QVBoxLayout()
-            self.Layout_Macros.setSpacing(50)
-
-            self.GLayout.addWidget(self.Label_Titulo,0,0,1,3)
-            self.GLayout.addWidget(self.Button_Tema,0,0,1,3, Qt.AlignLeft | Qt.AlignTop)
-
-            self.Layout_Macros.addWidget(self.ComboBox_Macros)
-            self.Layout_Macros.addWidget(self.Table_Macro)
-
-            self.Layout_Macros_Linha1 = QHBoxLayout()
-            self.Layout_Macros_Linha1.addWidget(self.Button_DeletarAcao)
-            self.Layout_Macros_Linha1.addWidget(self.Button_RegistrarAcao)
-            self.Layout_Macros.addLayout(self.Layout_Macros_Linha1)
-
-            self.Layout_Macros_Linha2 = QHBoxLayout()
-            self.Layout_Macros_Linha2.addWidget(self.TextBox_Ciclos)
-            self.Layout_Macros_Linha2.addWidget(self.Button_TestarMacro)
-            self.Layout_Macros.addLayout(self.Layout_Macros_Linha2)
-
-            self.Layout_Macros_Linha3 = QHBoxLayout()
-            self.Layout_Macros_Linha3.addWidget(self.Button_RegistrarMacro)
-            self.Layout_Macros_Linha3.addWidget(self.Button_CancelarMacro)
-            self.Layout_Macros.addLayout(self.Layout_Macros_Linha3)
-
-            self.Layout_Comandos.addWidget(self.Label_13)
-            self.Layout_Comandos_Aceleracao_Linha0 = QHBoxLayout()
-            self.Layout_Comandos_Aceleracao_Linha0.addWidget(self.Checkbox_Precisao1)
-            self.Layout_Comandos_Aceleracao_Linha0.addWidget(self.Checkbox_Precisao2)
-            self.Layout_Comandos_Aceleracao_Linha0.addWidget(self.Checkbox_Precisao3)
-            self.Layout_Comandos_Aceleracao_Linha0.addWidget(self.Checkbox_Precisao4)
-            self.Layout_Comandos_Aceleracao_Linha0.addWidget(self.Checkbox_Precisao5)
-            self.Layout_Comandos_Aceleracao_Linha0.addWidget(self.Checkbox_Precisao6)
-            self.Layout_Comandos.addLayout(self.Layout_Comandos_Aceleracao_Linha0)
-
-            self.Layout_Comandos.addWidget(self.Label_4)
-            self.Layout_Comandos_Aceleracao_Linha1 = QHBoxLayout()
-            self.Layout_Comandos_Aceleracao_Coluna1 = QVBoxLayout()
-            self.Layout_Comandos_Aceleracao_Coluna1.addWidget(self.TextBox_Aceleracao)
-            self.Layout_Comandos_Aceleracao_Coluna2 = QVBoxLayout()
-            self.Layout_Comandos_Aceleracao_Coluna2.addWidget(self.Button_MaisAceleracao)
-            self.Layout_Comandos_Aceleracao_Coluna2.addWidget(self.Button_MenosAceleracao)
-            self.Layout_Comandos_Aceleracao_Coluna3 = QVBoxLayout()
-            self.Layout_Comandos_Aceleracao_Coluna3.addWidget(self.Button_MaxAceleracao)
-            self.Layout_Comandos_Aceleracao_Coluna3.addWidget(self.Button_MedAceleracao)
-            self.Layout_Comandos_Aceleracao_Coluna3.addWidget(self.Button_MinAceleracao)
-            self.Layout_Comandos_Aceleracao_Linha1.addLayout(self.Layout_Comandos_Aceleracao_Coluna1)
-            self.Layout_Comandos_Aceleracao_Linha1.addLayout(self.Layout_Comandos_Aceleracao_Coluna2)
-            self.Layout_Comandos_Aceleracao_Linha1.addLayout(self.Layout_Comandos_Aceleracao_Coluna3)
-            self.Layout_Comandos.addLayout(self.Layout_Comandos_Aceleracao_Linha1)
-
-            self.Layout_Comandos.addWidget(self.Label_5)
-            self.Layout_Comandos_Velocidade_Linha1 = QHBoxLayout()
-            self.Layout_Comandos_Velocidade_Coluna1 = QVBoxLayout()
-            self.Layout_Comandos_Velocidade_Coluna1.addWidget(self.TextBox_Velocidade)
-            self.Layout_Comandos_Velocidade_Coluna2 = QVBoxLayout()
-            self.Layout_Comandos_Velocidade_Coluna2.addWidget(self.Button_MaisVelocidade)
-            self.Layout_Comandos_Velocidade_Coluna2.addWidget(self.Button_MenosVelocidade)
-            self.Layout_Comandos_Velocidade_Coluna3 = QVBoxLayout()
-            self.Layout_Comandos_Velocidade_Coluna3.addWidget(self.Button_MaxVelocidade)
-            self.Layout_Comandos_Velocidade_Coluna3.addWidget(self.Button_MedVelocidade)
-            self.Layout_Comandos_Velocidade_Coluna3.addWidget(self.Button_MinVelocidade)
-            self.Layout_Comandos_Velocidade_Linha1.addLayout(self.Layout_Comandos_Velocidade_Coluna1)
-            self.Layout_Comandos_Velocidade_Linha1.addLayout(self.Layout_Comandos_Velocidade_Coluna2)
-            self.Layout_Comandos_Velocidade_Linha1.addLayout(self.Layout_Comandos_Velocidade_Coluna3)
-            self.Layout_Comandos.addLayout(self.Layout_Comandos_Velocidade_Linha1)
-
-            self.Layout_Comandos.addWidget(self.Label_6)
-            self.Layout_Comandos_Posicao_Linha1 = QHBoxLayout()
-            self.Layout_Comandos_Posicao_Coluna1 = QVBoxLayout()
-            self.Layout_Comandos_Posicao_Coluna1.addWidget(self.TextBox_Posicao)
-            self.Layout_Comandos_Posicao_Coluna2 = QVBoxLayout()
-            self.Layout_Comandos_Posicao_Coluna2.addWidget(self.Button_MaisPosicao)
-            self.Layout_Comandos_Posicao_Coluna2.addWidget(self.Button_MenosPosicao)
-            self.Layout_Comandos_Posicao_Coluna3 = QVBoxLayout()
-            self.Layout_Comandos_Posicao_Coluna3.addWidget(self.Button_MaxPosicao)
-            self.Layout_Comandos_Posicao_Coluna3.addWidget(self.Button_MedPosicao)
-            self.Layout_Comandos_Posicao_Coluna3.addWidget(self.Button_MinPosicao)
-            self.Layout_Comandos_Posicao_Linha1.addLayout(self.Layout_Comandos_Posicao_Coluna1)
-            self.Layout_Comandos_Posicao_Linha1.addLayout(self.Layout_Comandos_Posicao_Coluna2)
-            self.Layout_Comandos_Posicao_Linha1.addLayout(self.Layout_Comandos_Posicao_Coluna3)
-            self.Layout_Comandos.addLayout(self.Layout_Comandos_Posicao_Linha1)
-
-            self.Layout_Comandos.addWidget(self.Label_7)
-            self.Layout_Comandos_Inclinacao_Linha1 = QHBoxLayout()
-            self.Layout_Comandos_Inclinacao_Coluna1 = QVBoxLayout()
-            self.Layout_Comandos_Inclinacao_Coluna1.addWidget(self.TextBox_Inclinacao)
-            self.Layout_Comandos_Inclinacao_Coluna2 = QVBoxLayout()
-            self.Layout_Comandos_Inclinacao_Coluna2.addWidget(self.Button_MaisInclinacao)
-            self.Layout_Comandos_Inclinacao_Coluna2.addWidget(self.Button_MenosInclinacao)
-            self.Layout_Comandos_Inclinacao_Coluna3 = QVBoxLayout()
-            self.Layout_Comandos_Inclinacao_Coluna3.addWidget(self.Button_MaxInclinacao)
-            self.Layout_Comandos_Inclinacao_Coluna3.addWidget(self.Button_MedInclinacao)
-            self.Layout_Comandos_Inclinacao_Coluna3.addWidget(self.Button_MinInclinacao)
-            self.Layout_Comandos_Inclinacao_Linha1.addLayout(self.Layout_Comandos_Inclinacao_Coluna1)
-            self.Layout_Comandos_Inclinacao_Linha1.addLayout(self.Layout_Comandos_Inclinacao_Coluna2)
-            self.Layout_Comandos_Inclinacao_Linha1.addLayout(self.Layout_Comandos_Inclinacao_Coluna3)
-            self.Layout_Comandos.addLayout(self.Layout_Comandos_Inclinacao_Linha1)
-
-            self.Layout_Comandos.addWidget(self.Label_11)
-            self.Layout_Comandos.addWidget(self.Button_Executar, Qt.AlignHCenter)
-
-            self.Layout_Status.addWidget(self.Label_8)
-            self.Layout_Status.addWidget(self.Label_9)
-            self.Layout_Status.addWidget(self.Label_12)
-            self.Layout_Status.addWidget(self.Table_Historico)
-
-            self.GLayout.addWidget(self.Label_1,1,0,1,1, Qt.AlignHCenter)
-            self.GLayout.addLayout(self.Layout_Macros,2,0,1,1)
-            self.GLayout.addWidget(self.Label_2,1,1,1,1, Qt.AlignHCenter)
-            self.GLayout.addLayout(self.Layout_Comandos,2,1,1,1)
-            self.GLayout.addWidget(self.Label_3,1,2,1,1, Qt.AlignHCenter)
-            self.GLayout.addLayout(self.Layout_Status,2,2,1,1)
-            self.GLayout.addWidget(self.Button_LimparDB,0,2, Qt.AlignTop | Qt.AlignRight)
-            self.GLayout.addWidget(self.Button_VersionInfo,0,2, Qt.AlignBottom | Qt.AlignRight)
-            self.GLayout.addWidget(self.Button_ArduinoConnect,0,2, Qt.AlignTop | Qt.AlignRight)
-
-        else:
-            self.Layout_Macros = QVBoxLayout()
-            self.Layout_Macros.setSpacing(50)
-            self.Layout_Comandos = QVBoxLayout()
-            self.Layout_Status = QVBoxLayout()
-
-            self.GLayout.addWidget(self.Label_Titulo,0,0,1,3)
-            self.GLayout.addWidget(self.Button_Tema,0,0,1,3, Qt.AlignLeft | Qt.AlignTop)
-
-            self.Layout_Macros_Linha1 = QHBoxLayout()
-            self.Layout_Macros_Linha1.addWidget(self.Button_Macro1)
-            self.Layout_Macros_Linha1.addWidget(self.Button_Macro2)
-            self.Layout_Macros.addLayout(self.Layout_Macros_Linha1)
-
-            self.Layout_Macros_Linha2 = QHBoxLayout()
-            self.Layout_Macros_Linha2.addWidget(self.Button_Macro3)
-            self.Layout_Macros_Linha2.addWidget(self.Button_Macro4)
-            self.Layout_Macros.addLayout(self.Layout_Macros_Linha2)
-
-            self.Layout_Macros_Linha3 = QHBoxLayout()
-            self.Layout_Macros_Linha3.addWidget(self.Button_Macro5)
-            self.Layout_Macros_Linha3.addWidget(self.Button_Macro6)
-            self.Layout_Macros.addLayout(self.Layout_Macros_Linha3)
-
-            self.Layout_Macros_Linha4 = QHBoxLayout()
-            self.Layout_Macros_Linha4.addWidget(self.Button_Macro7)
-            self.Layout_Macros_Linha4.addWidget(self.Button_Macro8)
-            self.Layout_Macros.addLayout(self.Layout_Macros_Linha4)
-
-            self.Layout_Macros.addWidget(self.Label_10)
-
-            self.Layout_Macros_Linha5 = QHBoxLayout()
-            self.Layout_Macros_Linha5.addWidget(self.Button_GravarMacro)
-            self.Layout_Macros_Linha5.addWidget(self.Button_DeletarMacro)
-            self.Layout_Macros.addLayout(self.Layout_Macros_Linha5)
-
-            self.Layout_Comandos.addWidget(self.Label_13)
-            self.Layout_Comandos_Aceleracao_Linha0 = QHBoxLayout()
-            self.Layout_Comandos_Aceleracao_Linha0.addWidget(self.Checkbox_Precisao1)
-            self.Layout_Comandos_Aceleracao_Linha0.addWidget(self.Checkbox_Precisao2)
-            self.Layout_Comandos_Aceleracao_Linha0.addWidget(self.Checkbox_Precisao3)
-            self.Layout_Comandos_Aceleracao_Linha0.addWidget(self.Checkbox_Precisao4)
-            self.Layout_Comandos_Aceleracao_Linha0.addWidget(self.Checkbox_Precisao5)
-            self.Layout_Comandos_Aceleracao_Linha0.addWidget(self.Checkbox_Precisao6)
-            self.Layout_Comandos.addLayout(self.Layout_Comandos_Aceleracao_Linha0)
-
-            self.Layout_Comandos.addWidget(self.Label_4)
-            self.Layout_Comandos_Aceleracao_Linha1 = QHBoxLayout()
-            self.Layout_Comandos_Aceleracao_Coluna1 = QVBoxLayout()
-            self.Layout_Comandos_Aceleracao_Coluna1.addWidget(self.TextBox_Aceleracao)
-            self.Layout_Comandos_Aceleracao_Coluna2 = QVBoxLayout()
-            self.Layout_Comandos_Aceleracao_Coluna2.addWidget(self.Button_MaisAceleracao)
-            self.Layout_Comandos_Aceleracao_Coluna2.addWidget(self.Button_MenosAceleracao)
-            self.Layout_Comandos_Aceleracao_Coluna3 = QVBoxLayout()
-            self.Layout_Comandos_Aceleracao_Coluna3.addWidget(self.Button_MaxAceleracao)
-            self.Layout_Comandos_Aceleracao_Coluna3.addWidget(self.Button_MedAceleracao)
-            self.Layout_Comandos_Aceleracao_Coluna3.addWidget(self.Button_MinAceleracao)
-            self.Layout_Comandos_Aceleracao_Linha1.addLayout(self.Layout_Comandos_Aceleracao_Coluna1)
-            self.Layout_Comandos_Aceleracao_Linha1.addLayout(self.Layout_Comandos_Aceleracao_Coluna2)
-            self.Layout_Comandos_Aceleracao_Linha1.addLayout(self.Layout_Comandos_Aceleracao_Coluna3)
-            self.Layout_Comandos.addLayout(self.Layout_Comandos_Aceleracao_Linha1)
-
-            self.Layout_Comandos.addWidget(self.Label_5)
-            self.Layout_Comandos_Velocidade_Linha1 = QHBoxLayout()
-            self.Layout_Comandos_Velocidade_Coluna1 = QVBoxLayout()
-            self.Layout_Comandos_Velocidade_Coluna1.addWidget(self.TextBox_Velocidade)
-            self.Layout_Comandos_Velocidade_Coluna2 = QVBoxLayout()
-            self.Layout_Comandos_Velocidade_Coluna2.addWidget(self.Button_MaisVelocidade)
-            self.Layout_Comandos_Velocidade_Coluna2.addWidget(self.Button_MenosVelocidade)
-            self.Layout_Comandos_Velocidade_Coluna3 = QVBoxLayout()
-            self.Layout_Comandos_Velocidade_Coluna3.addWidget(self.Button_MaxVelocidade)
-            self.Layout_Comandos_Velocidade_Coluna3.addWidget(self.Button_MedVelocidade)
-            self.Layout_Comandos_Velocidade_Coluna3.addWidget(self.Button_MinVelocidade)
-            self.Layout_Comandos_Velocidade_Linha1.addLayout(self.Layout_Comandos_Velocidade_Coluna1)
-            self.Layout_Comandos_Velocidade_Linha1.addLayout(self.Layout_Comandos_Velocidade_Coluna2)
-            self.Layout_Comandos_Velocidade_Linha1.addLayout(self.Layout_Comandos_Velocidade_Coluna3)
-            self.Layout_Comandos.addLayout(self.Layout_Comandos_Velocidade_Linha1)
-
-            self.Layout_Comandos.addWidget(self.Label_6)
-            self.Layout_Comandos_Posicao_Linha1 = QHBoxLayout()
-            self.Layout_Comandos_Posicao_Coluna1 = QVBoxLayout()
-            self.Layout_Comandos_Posicao_Coluna1.addWidget(self.TextBox_Posicao)
-            self.Layout_Comandos_Posicao_Coluna2 = QVBoxLayout()
-            self.Layout_Comandos_Posicao_Coluna2.addWidget(self.Button_MaisPosicao)
-            self.Layout_Comandos_Posicao_Coluna2.addWidget(self.Button_MenosPosicao)
-            self.Layout_Comandos_Posicao_Coluna3 = QVBoxLayout()
-            self.Layout_Comandos_Posicao_Coluna3.addWidget(self.Button_MaxPosicao)
-            self.Layout_Comandos_Posicao_Coluna3.addWidget(self.Button_MedPosicao)
-            self.Layout_Comandos_Posicao_Coluna3.addWidget(self.Button_MinPosicao)
-            self.Layout_Comandos_Posicao_Linha1.addLayout(self.Layout_Comandos_Posicao_Coluna1)
-            self.Layout_Comandos_Posicao_Linha1.addLayout(self.Layout_Comandos_Posicao_Coluna2)
-            self.Layout_Comandos_Posicao_Linha1.addLayout(self.Layout_Comandos_Posicao_Coluna3)
-            self.Layout_Comandos.addLayout(self.Layout_Comandos_Posicao_Linha1)
-
-            self.Layout_Comandos.addWidget(self.Label_7)
-            self.Layout_Comandos_Inclinacao_Linha1 = QHBoxLayout()
-            self.Layout_Comandos_Inclinacao_Coluna1 = QVBoxLayout()
-            self.Layout_Comandos_Inclinacao_Coluna1.addWidget(self.TextBox_Inclinacao)
-            self.Layout_Comandos_Inclinacao_Coluna2 = QVBoxLayout()
-            self.Layout_Comandos_Inclinacao_Coluna2.addWidget(self.Button_MaisInclinacao)
-            self.Layout_Comandos_Inclinacao_Coluna2.addWidget(self.Button_MenosInclinacao)
-            self.Layout_Comandos_Inclinacao_Coluna3 = QVBoxLayout()
-            self.Layout_Comandos_Inclinacao_Coluna3.addWidget(self.Button_MaxInclinacao)
-            self.Layout_Comandos_Inclinacao_Coluna3.addWidget(self.Button_MedInclinacao)
-            self.Layout_Comandos_Inclinacao_Coluna3.addWidget(self.Button_MinInclinacao)
-            self.Layout_Comandos_Inclinacao_Linha1.addLayout(self.Layout_Comandos_Inclinacao_Coluna1)
-            self.Layout_Comandos_Inclinacao_Linha1.addLayout(self.Layout_Comandos_Inclinacao_Coluna2)
-            self.Layout_Comandos_Inclinacao_Linha1.addLayout(self.Layout_Comandos_Inclinacao_Coluna3)
-            self.Layout_Comandos.addLayout(self.Layout_Comandos_Inclinacao_Linha1)
-
-            self.Layout_Comandos.addWidget(self.Label_11)
-            self.Layout_Comandos.addWidget(self.Button_Executar, Qt.AlignHCenter)
-
-            self.Layout_Status.addWidget(self.Label_8)
-            self.Layout_Status.addWidget(self.Label_9)
-            self.Layout_Status.addWidget(self.Label_12)
-            self.Layout_Status.addWidget(self.Table_Historico)
-
-            self.GLayout.addWidget(self.Label_1,1,0,1,1, Qt.AlignHCenter)
-            self.GLayout.addLayout(self.Layout_Macros,2,0,1,1)
-            self.GLayout.addWidget(self.Label_2,1,1,1,1, Qt.AlignHCenter)
-            self.GLayout.addLayout(self.Layout_Comandos,2,1,1,1)
-            self.GLayout.addWidget(self.Label_3,1,2,1,1, Qt.AlignHCenter)
-            self.GLayout.addLayout(self.Layout_Status,2,2,1,1)
-            self.GLayout.addWidget(self.Button_LimparDB,0,2, Qt.AlignTop | Qt.AlignRight)
-            self.GLayout.addWidget(self.Button_VersionInfo,0,2, Qt.AlignBottom | Qt.AlignRight)
-            self.GLayout.addWidget(self.Button_ArduinoConnect,0,2, Qt.AlignTop | Qt.AlignRight)
-
-#%% Outros
-    def InsertDataInTable_Historio(self):
-        self.data = self.DBManager.GetAllMoves()
-        self.data = self.data[::-1]
-        self.Table_Historico.setRowCount(len(self.data))
-
-        for i, item in enumerate(self.data):
-            it = self.Table_Historico.item(i, 0)
-            text = str("h="+str(item[0])+"mm | "+
-                        "v="+str(item[1])+"mm/s | "+
-                        "a="+str(item[2])+"mm/s² | "+
-                        "\u03B1="+str(item[3])+"°")
-            it = QTableWidgetItem(text)
-            it.setFlags(Qt.ItemFlags(Qt.ItemIsSelectable)) # Desabilita selecionar o item
-            it.setFlags(it.flags() & ~Qt.ItemIsEditable) # Desabilita a edição do item
-            it.setTextAlignment(Qt.AlignCenter)
-            it.setForeground(QBrush(QColor('black')))
-            self.Table_Historico.setItem(i, 0, it)
-        self.Table_Historico.adjustSize()
-        self.Table_Historico.setColumnWidth(0, 260)
-
-    def InsertDataInTable_Macro(self):
-        self.dataMacro = self.DBManager.GetMacroMoves(self.ComboBox_Macros.currentIndex())
-        if len(self.dataMacro)>0: self.TextBox_Ciclos.setText(str(self.dataMacro[0][5]))
-        self.Table_Macro.setRowCount(len(self.dataMacro))
-
-        for i, item in enumerate(self.dataMacro):
-            for j in range(len(item)):
-                if not j == 6:
-                    it = self.Table_Macro.item(i, j)
-                    text = str(item[j])
-                    it = QTableWidgetItem(text)
-                    if not j == 4:
-                        it.setFlags(Qt.ItemFlags(Qt.ItemIsSelectable)) # Desabilita selecionar o item
-                        it.setFlags(it.flags() & ~Qt.ItemIsEditable) # Desabilita a edição do item
-                    it.setTextAlignment(Qt.AlignCenter)
-                    it.setForeground(QBrush(QColor('black')))
-                    self.Table_Macro.setItem(i, j, it)
-        self.Table_Macro.adjustSize()
-        for i in range(5):
-            self.Table_Macro.setColumnWidth(i, int(self.frameGeometry().width()*2/7/5))
-
-    def ClearPage(self):
-        self.Label_Titulo.deleteLater()
-        self.Label_1.deleteLater()
-        self.Label_2.deleteLater()
-        self.Label_3.deleteLater()
-        self.Label_4.deleteLater()
-        self.Label_5.deleteLater()
-        self.Label_6.deleteLater()
-        self.Label_7.deleteLater()
-        self.Label_8.deleteLater()
-        self.Label_9.deleteLater()
-        self.Label_10.deleteLater()
-        self.Label_11.deleteLater()
-        self.Label_12.deleteLater()
-        self.Label_13.deleteLater()
-        self.Button_Tema.deleteLater()
-        self.Button_Macro1.deleteLater()
-        self.Button_Macro2.deleteLater()
-        self.Button_Macro3.deleteLater()
-        self.Button_Macro4.deleteLater()
-        self.Button_Macro5.deleteLater()
-        self.Button_Macro6.deleteLater()
-        self.Button_Macro7.deleteLater()
-        self.Button_Macro8.deleteLater()
-        self.Button_GravarMacro.deleteLater()
-        self.Button_DeletarMacro.deleteLater()
-        self.Button_MaisAceleracao.deleteLater()
-        self.Button_MenosAceleracao.deleteLater()
-        self.Button_MaisVelocidade.deleteLater()
-        self.Button_MenosVelocidade.deleteLater()
-        self.Button_MaisPosicao.deleteLater()
-        self.Button_MenosPosicao.deleteLater()
-        self.Button_MaisInclinacao.deleteLater()
-        self.Button_MenosInclinacao.deleteLater()
-        self.Button_MaxAceleracao.deleteLater()
-        self.Button_MedAceleracao.deleteLater()
-        self.Button_MinAceleracao.deleteLater()
-        self.Button_MaxVelocidade.deleteLater()
-        self.Button_MedVelocidade.deleteLater()
-        self.Button_MinVelocidade.deleteLater()
-        self.Button_MaxPosicao.deleteLater()
-        self.Button_MedPosicao.deleteLater()
-        self.Button_MinPosicao.deleteLater()
-        self.Button_MaxInclinacao.deleteLater()
-        self.Button_MedInclinacao.deleteLater()
-        self.Button_MinInclinacao.deleteLater()
-        self.Button_LimparDB.deleteLater()
-        self.Button_Executar.deleteLater()
-        self.Button_LimparDB.deleteLater()
-        self.Button_DeletarAcao.deleteLater()
-        self.Button_RegistrarAcao.deleteLater()
-        self.Button_TestarMacro.deleteLater()
-        self.Button_RegistrarMacro.deleteLater()
-        self.Button_CancelarMacro.deleteLater()
-        self.TextBox_Aceleracao.deleteLater()
-        self.TextBox_Velocidade.deleteLater()
-        self.TextBox_Posicao.deleteLater()
-        self.TextBox_Inclinacao.deleteLater()
-        self.TextBox_Ciclos.deleteLater()
-        self.Table_Historico.deleteLater()
-        self.Table_Macro.deleteLater()
-        self.ComboBox_Macros.deleteLater()
-        self.Checkbox_Precisao1.deleteLater()
-        self.Checkbox_Precisao2.deleteLater()
-        self.Checkbox_Precisao3.deleteLater()
-        self.Checkbox_Precisao4.deleteLater()
-        self.Checkbox_Precisao5.deleteLater()
-        self.Checkbox_Precisao6.deleteLater()
-        self.GroupCheckbox_Precisao.deleteLater()
-
-        if self.GravarMacro == "Gravar":
-            self.Layout_Macros.removeItem(self.Layout_Macros_Linha1)
-            self.Layout_Macros.removeItem(self.Layout_Macros_Linha2)
-            self.Layout_Macros.removeItem(self.Layout_Macros_Linha3)
-
-            self.Layout_Comandos_Aceleracao_Linha1.removeItem(self.Layout_Comandos_Aceleracao_Coluna1)
-            self.Layout_Comandos_Aceleracao_Linha1.removeItem(self.Layout_Comandos_Aceleracao_Coluna2)
-            self.Layout_Comandos_Aceleracao_Linha1.removeItem(self.Layout_Comandos_Aceleracao_Coluna3)
-            self.Layout_Comandos.removeItem(self.Layout_Comandos_Aceleracao_Linha1)
-
-            self.Layout_Comandos_Velocidade_Linha1.removeItem(self.Layout_Comandos_Velocidade_Coluna1)
-            self.Layout_Comandos_Velocidade_Linha1.removeItem(self.Layout_Comandos_Velocidade_Coluna2)
-            self.Layout_Comandos_Velocidade_Linha1.removeItem(self.Layout_Comandos_Velocidade_Coluna3)
-            self.Layout_Comandos.removeItem(self.Layout_Comandos_Velocidade_Linha1)
-
-            self.Layout_Comandos_Posicao_Linha1.removeItem(self.Layout_Comandos_Posicao_Coluna1)
-            self.Layout_Comandos_Posicao_Linha1.removeItem(self.Layout_Comandos_Posicao_Coluna2)
-            self.Layout_Comandos_Posicao_Linha1.removeItem(self.Layout_Comandos_Posicao_Coluna3)
-            self.Layout_Comandos.removeItem(self.Layout_Comandos_Posicao_Linha1)
-
-            self.Layout_Comandos_Inclinacao_Linha1.removeItem(self.Layout_Comandos_Inclinacao_Coluna1)
-            self.Layout_Comandos_Inclinacao_Linha1.removeItem(self.Layout_Comandos_Inclinacao_Coluna2)
-            self.Layout_Comandos_Inclinacao_Linha1.removeItem(self.Layout_Comandos_Inclinacao_Coluna3)
-            self.Layout_Comandos.removeItem(self.Layout_Comandos_Inclinacao_Linha1)
-
-            self.GLayout.removeItem(self.Layout_Macros)
-            self.GLayout.removeItem(self.Layout_Comandos)
-            self.GLayout.removeItem(self.Layout_Status)
-        else:
-            self.Layout_Macros.removeItem(self.Layout_Macros_Linha1)
-            self.Layout_Macros.removeItem(self.Layout_Macros_Linha2)
-            self.Layout_Macros.removeItem(self.Layout_Macros_Linha3)
-            self.Layout_Macros.removeItem(self.Layout_Macros_Linha4)
-            self.Layout_Macros.removeItem(self.Layout_Macros_Linha5)
-
-            self.Layout_Comandos_Aceleracao_Linha1.removeItem(self.Layout_Comandos_Aceleracao_Coluna1)
-            self.Layout_Comandos_Aceleracao_Linha1.removeItem(self.Layout_Comandos_Aceleracao_Coluna2)
-            self.Layout_Comandos_Aceleracao_Linha1.removeItem(self.Layout_Comandos_Aceleracao_Coluna3)
-            self.Layout_Comandos.removeItem(self.Layout_Comandos_Aceleracao_Linha1)
-
-            self.Layout_Comandos_Velocidade_Linha1.removeItem(self.Layout_Comandos_Velocidade_Coluna1)
-            self.Layout_Comandos_Velocidade_Linha1.removeItem(self.Layout_Comandos_Velocidade_Coluna2)
-            self.Layout_Comandos_Velocidade_Linha1.removeItem(self.Layout_Comandos_Velocidade_Coluna3)
-            self.Layout_Comandos.removeItem(self.Layout_Comandos_Velocidade_Linha1)
-
-            self.Layout_Comandos_Posicao_Linha1.removeItem(self.Layout_Comandos_Posicao_Coluna1)
-            self.Layout_Comandos_Posicao_Linha1.removeItem(self.Layout_Comandos_Posicao_Coluna2)
-            self.Layout_Comandos_Posicao_Linha1.removeItem(self.Layout_Comandos_Posicao_Coluna3)
-            self.Layout_Comandos.removeItem(self.Layout_Comandos_Posicao_Linha1)
-
-            self.Layout_Comandos_Inclinacao_Linha1.removeItem(self.Layout_Comandos_Inclinacao_Coluna1)
-            self.Layout_Comandos_Inclinacao_Linha1.removeItem(self.Layout_Comandos_Inclinacao_Coluna2)
-            self.Layout_Comandos_Inclinacao_Linha1.removeItem(self.Layout_Comandos_Inclinacao_Coluna3)
-            self.Layout_Comandos.removeItem(self.Layout_Comandos_Inclinacao_Linha1)
-
-            self.GLayout.removeItem(self.Layout_Macros)
-            self.GLayout.removeItem(self.Layout_Comandos)
-            self.GLayout.removeItem(self.Layout_Status)
-
-    def OnButtonPressed(self, ButtonPressed):
-        if ButtonPressed == 'Mudar tema':
-            # Troca tema e aplica
-            if self.backgroundStyle == 'Dark': self.backgroundStyle = 'Bright'
-            else: self.backgroundStyle = 'Dark'
-
-            if self.backgroundStyle == 'Dark':
-                BackgroundColor = 'black'
-                BackgroundColor2 = 'gray'
-                FontColor = 'white'
-            else:
-                BackgroundColor = 'gray'
-                BackgroundColor2 = 'white'
-                FontColor = 'black'
-            background = self.palette()
-            background.setColor(self.backgroundRole(), QColor(BackgroundColor))
-            self.setPalette(background)
-            self.Background_1.setStyleSheet("background-color: "+BackgroundColor)
-
-            self.Label_Titulo.setStyleSheet('color: '+FontColor)
-            self.Label_1.setStyleSheet('color: '+FontColor)
-            self.Label_2.setStyleSheet('color: '+FontColor)
-            self.Label_3.setStyleSheet('color: '+FontColor)
-            self.Label_4.setStyleSheet('color: '+FontColor)
-            self.Label_5.setStyleSheet('color: '+FontColor)
-            self.Label_6.setStyleSheet('color: '+FontColor)
-            self.Label_7.setStyleSheet('color: '+FontColor)
-            self.Label_8.setStyleSheet('color: '+FontColor)
-            self.Label_9.setStyleSheet('color: '+FontColor)
-
-            self.Button_Tema.setStyleSheet("background-color: "+BackgroundColor+"; border: none; outline: none;")
-            self.Button_Macro1.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-            self.Button_Macro2.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-            self.Button_Macro3.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-            self.Button_Macro4.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-            self.Button_Macro5.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-            self.Button_Macro6.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-            self.Button_Macro7.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-            self.Button_Macro8.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-            self.Button_GravarMacro.setStyleSheet("background-color: "+BackgroundColor2+"; color: border: none; outline: none;")
-            self.Button_DeletarMacro.setStyleSheet("background-color: "+BackgroundColor2+"; color: border: none; outline: none;")
-            self.Button_MaisAceleracao.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-            self.Button_MenosAceleracao.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-            self.Button_MaisVelocidade.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-            self.Button_MenosVelocidade.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-            self.Button_MaisPosicao.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-            self.Button_MenosPosicao.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-            self.Button_MaisInclinacao.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-            self.Button_MenosInclinacao.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-            self.Button_MaxAceleracao.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-            self.Button_MedAceleracao.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-            self.Button_MinAceleracao.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-            self.Button_MaxVelocidade.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-            self.Button_MedVelocidade.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-            self.Button_MinVelocidade.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-            self.Button_MaxPosicao.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-            self.Button_MedPosicao.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-            self.Button_MinPosicao.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-            self.Button_MaxInclinacao.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-            self.Button_MedInclinacao.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-            self.Button_MinInclinacao.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-            # self.Button_Executar.setStyleSheet("background-color: "+BackgroundColor2+"; color: border: none; outline: none;")
-            self.Button_LimparDB.setStyleSheet("background-color: "+BackgroundColor+"; border: none; outline: none;")
-            # self.Button_DeletarAcao.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-            # self.Button_RegistrarAcao.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-            self.Button_TestarMacro.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-            self.TextBox_Aceleracao.setStyleSheet("background-color: "+BackgroundColor2+"; color: black;  border: none; outline: none;")
-            self.TextBox_Velocidade.setStyleSheet("background-color: "+BackgroundColor2+"; color: black;  border: none; outline: none;")
-            self.TextBox_Posicao.setStyleSheet("background-color: "+BackgroundColor2+"; color: black;  border: none; outline: none;")
-            self.TextBox_Inclinacao.setStyleSheet("background-color: "+BackgroundColor2+"; color: black;  border: none; outline: none;")
-            self.TextBox_Ciclos.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-            self.ComboBox_Macros.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-            self.edit.setStyleSheet("background-color: "+BackgroundColor2+"; border: none; outline: none;")
-            if self.backgroundStyle == 'Dark': self.Button_LimparDB.setIcon(QIcon("./images/Limpar DB - Tema escuro.png"))
-            else: self.Button_LimparDB.setIcon(QIcon("./images/Limpar DB.png"))
-
-        elif ButtonPressed == 'Macro1':
-            if self.ArduinoComm.Connected:
-                if not self.MacroRunning:
-                    self.MacroRunning = True
-                    ToSave = False
-                    comandos = self.DBManager.GetMacroMoves(0)
-                    comandos = comandos[::-1]
-                    if len(comandos)>0:
-                        MessageBox_Msg1 = QMessageBox()
-                        MessageBox_Msg1.setWindowTitle("Salvar em CSV")
-                        MessageBox_Msg1.setText("Deseja salvar os comandos em um arquivo CSV?")
-                        MessageBox_Msg1.setIcon(QMessageBox.Question)
-                        MessageBox_Msg1.setStandardButtons(QMessageBox.Yes|QMessageBox.No)
-                        MessageBox_Msg1.setDefaultButton(QMessageBox.No)
-                        MessageBox_Msg1.setWindowIcon(QIcon(".\images\save.png"))
-                        returnValue = MessageBox_Msg1.exec()
-                        if returnValue == QMessageBox.Yes:
-                            root = tkinter.Tk()
-                            root.withdraw() # use to hide tkinter window
-                            if not self.filedialogIsOpen:
-                                self.filedialogIsOpen = True
-                                FilePath_SaveAs = filedialog.asksaveasfilename(title='Selecione a pasta para salvar seu resultado CSV', filetypes=[("CSV files", "*.csv")])
-                                self.filedialogIsOpen = False
-                                if not len(FilePath_SaveAs)>0:
-                                    self.MacroRunning = False # Cancela a execução da macro
-                                    QMessageBox.warning(self, 'Aviso', 'Execução cancelada.\nMotivo:\nO caminho do CSV não foi especificado.')
-                                else: ToSave = True
-                        if self.MacroRunning:
-                            if ToSave:
-                                f = open(FilePath_SaveAs.replace(".csv","")+".csv", 'w', newline='', encoding='utf-8')
-                                w = csv.writer(f)
-                                w.writerow(["Execucao da macro "+self.Button_Macro1.text()])
-                            for ciclo in range(comandos[0][5]):
-                                print("Ciclo",ciclo+1)
-                                if ToSave:
-                                    w.writerow(["Ciclo "+str(ciclo+1)])
-                                    w.writerow(["h (mm)", "v (mm/s)", "a (mm/s2)", "\alpha (graus)","Atraso (s)"])
-                                for comando in comandos:
-                                    self.DBManager.WriteOnDB([comando[0],comando[1],comando[2],comando[3]])
-                                    self.Table_Historico.clear()
-                                    self.InsertDataInTable_Historio()
-                                    self.Label_8.setText("Posição atual\n"+str(comando[0])+"mm")
-                                    self.Label_9.setText("Inclinação atual\n"+str(comando[1])+"°")
-                                    self.ArduinoComm.SendCommand([comando[0],comando[1],comando[2],comando[3],comando[4]])
-                                    if ToSave: w.writerow([comando[0],comando[1],comando[2],comando[3],comando[4]])
-                            if ToSave:
-                                # Pedir Observação
-                                observacao, done = QInputDialog.getText(self, 'Obs', 'Insira uma observação (opcional):')
-                                # Salvar comandos e observação em CSV
-                                w.writerow(["Observacao",observacao])
-                                f.close()
-                    else:
-                        QMessageBox.warning(self, 'Aviso', 'Não há nada registrado nessa macro.')
-                    self.MacroRunning = False
-                else:
-                    QMessageBox.warning(self, 'Erro', 'Arduino não conectado.')
-
-        elif ButtonPressed == 'Macro2':
-            if self.ArduinoComm.Connected:
-                if not self.MacroRunning:
-                    self.MacroRunning = True
-                    ToSave = False
-                    comandos = self.DBManager.GetMacroMoves(1)
-                    comandos = comandos[::-1]
-                    if len(comandos)>0:
-                        MessageBox_Msg1 = QMessageBox()
-                        MessageBox_Msg1.setWindowTitle("Salvar em CSV")
-                        MessageBox_Msg1.setText("Deseja salvar os comandos em um arquivo CSV?")
-                        MessageBox_Msg1.setIcon(QMessageBox.Question)
-                        MessageBox_Msg1.setStandardButtons(QMessageBox.Yes|QMessageBox.No)
-                        MessageBox_Msg1.setDefaultButton(QMessageBox.No)
-                        MessageBox_Msg1.setWindowIcon(QIcon(".\images\save.png"))
-                        returnValue = MessageBox_Msg1.exec()
-                        if returnValue == QMessageBox.Yes:
-                            root = tkinter.Tk()
-                            root.withdraw() # use to hide tkinter window
-                            if not self.filedialogIsOpen:
-                                self.filedialogIsOpen = True
-                                FilePath_SaveAs = filedialog.asksaveasfilename(title='Selecione a pasta para salvar seu resultado CSV', filetypes=[("CSV files", "*.csv")])
-                                self.filedialogIsOpen = False
-                                if not len(FilePath_SaveAs)>0:
-                                    self.MacroRunning = False # Cancela a execução da macro
-                                    QMessageBox.warning(self, 'Aviso', 'Execução cancelada.\nMotivo:\nO caminho do CSV não foi especificado.')
-                                else: ToSave = True
-                            if self.MacroRunning:
-                                if ToSave:
-                                    f = open(FilePath_SaveAs.replace(".csv","")+".csv", 'w', newline='', encoding='utf-8')
-                                    w = csv.writer(f)
-                                    w.writerow(["Execucao da macro "+self.Button_Macro2.text()])
-                                for ciclo in range(comandos[0][5]):
-                                    print("Ciclo",ciclo+1)
-                                    if ToSave:
-                                        w.writerow(["Ciclo "+str(ciclo+1)])
-                                        w.writerow(["h (mm)", "v (mm/s)", "a (mm/s2)", "\alpha (graus)","Atraso (s)"])
-                                    for comando in comandos:
-                                        self.DBManager.WriteOnDB([comando[0],comando[1],comando[2],comando[3]])
-                                        self.Table_Historico.clear()
-                                        self.InsertDataInTable_Historio()
-                                        self.Label_8.setText("Posição atual\n"+str(comando[0])+"mm")
-                                        self.Label_9.setText("Inclinação atual\n"+str(comando[1])+"°")
-                                        self.ArduinoComm.SendCommand([comando[0],comando[1],comando[2],comando[3],comando[4]])
-                                        if ToSave: w.writerow([comando[0],comando[1],comando[2],comando[3],comando[4]])
-                                if ToSave:
-                                    # Pedir Observação
-                                    observacao, done = QInputDialog.getText(self, 'Obs', 'Insira uma observação (opcional):')
-                                    # Salvar comandos e observação em CSV
-                                    w.writerow(["Observacao",observacao])
-                                    f.close()
-                            else:
-                                QMessageBox.warning(self, 'Aviso', 'Não há nada registrado nessa macro.')
-                    self.MacroRunning = False
-                else:
-                    QMessageBox.warning(self, 'Erro', 'Arduino não conectado.')
-
-        elif ButtonPressed == 'Macro3':
-            if self.ArduinoComm.Connected:
-                if not self.MacroRunning:
-                    self.MacroRunning = True
-                    ToSave = False
-                    comandos = self.DBManager.GetMacroMoves(2)
-                    comandos = comandos[::-1]
-                    if len(comandos)>0:
-                        MessageBox_Msg1 = QMessageBox()
-                        MessageBox_Msg1.setWindowTitle("Salvar em CSV")
-                        MessageBox_Msg1.setText("Deseja salvar os comandos em um arquivo CSV?")
-                        MessageBox_Msg1.setIcon(QMessageBox.Question)
-                        MessageBox_Msg1.setStandardButtons(QMessageBox.Yes|QMessageBox.No)
-                        MessageBox_Msg1.setDefaultButton(QMessageBox.No)
-                        MessageBox_Msg1.setWindowIcon(QIcon(".\images\save.png"))
-                        returnValue = MessageBox_Msg1.exec()
-                        if returnValue == QMessageBox.Yes:
-                            root = tkinter.Tk()
-                            root.withdraw() # use to hide tkinter window
-                            if not self.filedialogIsOpen:
-                                self.filedialogIsOpen = True
-                                FilePath_SaveAs = filedialog.asksaveasfilename(title='Selecione a pasta para salvar seu resultado CSV', filetypes=[("CSV files", "*.csv")])
-                                self.filedialogIsOpen = False
-                                if not len(FilePath_SaveAs)>0:
-                                    self.MacroRunning = False # Cancela a execução da macro
-                                    QMessageBox.warning(self, 'Aviso', 'Execução cancelada.\nMotivo:\nO caminho do CSV não foi especificado.')
-                                else: ToSave = True
-                            if self.MacroRunning:
-                                if ToSave:
-                                    f = open(FilePath_SaveAs.replace(".csv","")+".csv", 'w', newline='', encoding='utf-8')
-                                    w = csv.writer(f)
-                                    w.writerow(["Execucao da macro "+self.Button_Macro3.text()])
-                                for ciclo in range(comandos[0][5]):
-                                    print("Ciclo",ciclo+1)
-                                    if ToSave:
-                                        w.writerow(["Ciclo "+str(ciclo+1)])
-                                        w.writerow(["h (mm)", "v (mm/s)", "a (mm/s2)", "\alpha (graus)","Atraso (s)"])
-                                    for comando in comandos:
-                                        self.DBManager.WriteOnDB([comando[0],comando[1],comando[2],comando[3]])
-                                        self.Table_Historico.clear()
-                                        self.InsertDataInTable_Historio()
-                                        self.Label_8.setText("Posição atual\n"+str(comando[0])+"mm")
-                                        self.Label_9.setText("Inclinação atual\n"+str(comando[1])+"°")
-                                        self.ArduinoComm.SendCommand([comando[0],comando[1],comando[2],comando[3],comando[4]])
-                                        if ToSave: w.writerow([comando[0],comando[1],comando[2],comando[3],comando[4]])
-                                if ToSave:
-                                    # Pedir Observação
-                                    observacao, done = QInputDialog.getText(self, 'Obs', 'Insira uma observação (opcional):')
-                                    # Salvar comandos e observação em CSV
-                                    w.writerow(["Observacao",observacao])
-                                    f.close()
-                            else:
-                                QMessageBox.warning(self, 'Aviso', 'Não há nada registrado nessa macro.')
-                    self.MacroRunning = False
-                else:
-                    QMessageBox.warning(self, 'Erro', 'Arduino não conectado.')
-
-        elif ButtonPressed == 'Macro4':
-            if self.ArduinoComm.Connected:
-                if not self.MacroRunning:
-                    self.MacroRunning = True
-                    ToSave = False
-                    comandos = self.DBManager.GetMacroMoves(3)
-                    comandos = comandos[::-1]
-                    if len(comandos)>0:
-                        MessageBox_Msg1 = QMessageBox()
-                        MessageBox_Msg1.setWindowTitle("Salvar em CSV")
-                        MessageBox_Msg1.setText("Deseja salvar os comandos em um arquivo CSV?")
-                        MessageBox_Msg1.setIcon(QMessageBox.Question)
-                        MessageBox_Msg1.setStandardButtons(QMessageBox.Yes|QMessageBox.No)
-                        MessageBox_Msg1.setDefaultButton(QMessageBox.No)
-                        MessageBox_Msg1.setWindowIcon(QIcon(".\images\save.png"))
-                        returnValue = MessageBox_Msg1.exec()
-                        if returnValue == QMessageBox.Yes:
-                            root = tkinter.Tk()
-                            root.withdraw() # use to hide tkinter window
-                            if not self.filedialogIsOpen:
-                                self.filedialogIsOpen = True
-                                FilePath_SaveAs = filedialog.asksaveasfilename(title='Selecione a pasta para salvar seu resultado CSV', filetypes=[("CSV files", "*.csv")])
-                                self.filedialogIsOpen = False
-                                if not len(FilePath_SaveAs)>0:
-                                    self.MacroRunning = False # Cancela a execução da macro
-                                    QMessageBox.warning(self, 'Aviso', 'Execução cancelada.\nMotivo:\nO caminho do CSV não foi especificado.')
-                                else: ToSave = True
-                            if self.MacroRunning:
-                                if ToSave:
-                                    f = open(FilePath_SaveAs.replace(".csv","")+".csv", 'w', newline='', encoding='utf-8')
-                                    w = csv.writer(f)
-                                    w.writerow(["Execucao da macro "+self.Button_Macro4.text()])
-                                for ciclo in range(comandos[0][5]):
-                                    print("Ciclo",ciclo+1)
-                                    if ToSave:
-                                        w.writerow(["Ciclo "+str(ciclo+1)])
-                                        w.writerow(["h (mm)", "v (mm/s)", "a (mm/s2)", "\alpha (graus)","Atraso (s)"])
-                                    for comando in comandos:
-                                        self.DBManager.WriteOnDB([comando[0],comando[1],comando[2],comando[3]])
-                                        self.Table_Historico.clear()
-                                        self.InsertDataInTable_Historio()
-                                        self.Label_8.setText("Posição atual\n"+str(comando[0])+"mm")
-                                        self.Label_9.setText("Inclinação atual\n"+str(comando[1])+"°")
-                                        self.ArduinoComm.SendCommand([comando[0],comando[1],comando[2],comando[3],comando[4]])
-                                        if ToSave: w.writerow([comando[0],comando[1],comando[2],comando[3],comando[4]])
-                                if ToSave:
-                                    # Pedir Observação
-                                    observacao, done = QInputDialog.getText(self, 'Obs', 'Insira uma observação (opcional):')
-                                    # Salvar comandos e observação em CSV
-                                    w.writerow(["Observacao",observacao])
-                                    f.close()
-                    else:
-                        QMessageBox.warning(self, 'Aviso', 'Não há nada registrado nessa macro.')
-                    self.MacroRunning = False
-                else:
-                    QMessageBox.warning(self, 'Erro', 'Arduino não conectado.')
-
-        elif ButtonPressed == 'Macro5':
-            if self.ArduinoComm.Connected:
-                if not self.MacroRunning:
-                    self.MacroRunning = True
-                    ToSave = False
-                    comandos = self.DBManager.GetMacroMoves(4)
-                    comandos = comandos[::-1]
-                    if len(comandos)>0:
-                        MessageBox_Msg1 = QMessageBox()
-                        MessageBox_Msg1.setWindowTitle("Salvar em CSV")
-                        MessageBox_Msg1.setText("Deseja salvar os comandos em um arquivo CSV?")
-                        MessageBox_Msg1.setIcon(QMessageBox.Question)
-                        MessageBox_Msg1.setStandardButtons(QMessageBox.Yes|QMessageBox.No)
-                        MessageBox_Msg1.setDefaultButton(QMessageBox.No)
-                        MessageBox_Msg1.setWindowIcon(QIcon(".\images\save.png"))
-                        returnValue = MessageBox_Msg1.exec()
-                        if returnValue == QMessageBox.Yes:
-                            root = tkinter.Tk()
-                            root.withdraw() # use to hide tkinter window
-                            if not self.filedialogIsOpen:
-                                self.filedialogIsOpen = True
-                                FilePath_SaveAs = filedialog.asksaveasfilename(title='Selecione a pasta para salvar seu resultado CSV', filetypes=[("CSV files", "*.csv")])
-                                self.filedialogIsOpen = False
-                                if not len(FilePath_SaveAs)>0:
-                                    self.MacroRunning = False # Cancela a execução da macro
-                                    QMessageBox.warning(self, 'Aviso', 'Execução cancelada.\nMotivo:\nO caminho do CSV não foi especificado.')
-                                else: ToSave = True
-                            if self.MacroRunning:
-                                if ToSave:
-                                    f = open(FilePath_SaveAs.replace(".csv","")+".csv", 'w', newline='', encoding='utf-8')
-                                    w = csv.writer(f)
-                                    w.writerow(["Execucao da macro "+self.Button_Macro5.text()])
-                                for ciclo in range(comandos[0][5]):
-                                    print("Ciclo",ciclo+1)
-                                    if ToSave:
-                                        w.writerow(["Ciclo "+str(ciclo+1)])
-                                        w.writerow(["h (mm)", "v (mm/s)", "a (mm/s2)", "\alpha (graus)","Atraso (s)"])
-                                    for comando in comandos:
-                                        self.DBManager.WriteOnDB([comando[0],comando[1],comando[2],comando[3]])
-                                        self.Table_Historico.clear()
-                                        self.InsertDataInTable_Historio()
-                                        self.Label_8.setText("Posição atual\n"+str(comando[0])+"mm")
-                                        self.Label_9.setText("Inclinação atual\n"+str(comando[1])+"°")
-                                        self.ArduinoComm.SendCommand([comando[0],comando[1],comando[2],comando[3],comando[4]])
-                                        if ToSave: w.writerow([comando[0],comando[1],comando[2],comando[3],comando[4]])
-                                if ToSave:
-                                    # Pedir Observação
-                                    observacao, done = QInputDialog.getText(self, 'Obs', 'Insira uma observação (opcional):')
-                                    # Salvar comandos e observação em CSV
-                                    w.writerow(["Observacao",observacao])
-                                    f.close()
-                            else:
-                                QMessageBox.warning(self, 'Aviso', 'Não há nada registrado nessa macro.')
-                    self.MacroRunning = False
-                else:
-                    QMessageBox.warning(self, 'Erro', 'Arduino não conectado.')
-
-        elif ButtonPressed == 'Macro6':
-            if self.ArduinoComm.Connected:
-                if not self.MacroRunning:
-                    self.MacroRunning = True
-                    ToSave = False
-                    comandos = self.DBManager.GetMacroMoves(5)
-                    comandos = comandos[::-1]
-                    if len(comandos)>0:
-                        MessageBox_Msg1 = QMessageBox()
-                        MessageBox_Msg1.setWindowTitle("Salvar em CSV")
-                        MessageBox_Msg1.setText("Deseja salvar os comandos em um arquivo CSV?")
-                        MessageBox_Msg1.setIcon(QMessageBox.Question)
-                        MessageBox_Msg1.setStandardButtons(QMessageBox.Yes|QMessageBox.No)
-                        MessageBox_Msg1.setDefaultButton(QMessageBox.No)
-                        MessageBox_Msg1.setWindowIcon(QIcon(".\images\save.png"))
-                        returnValue = MessageBox_Msg1.exec()
-                        if returnValue == QMessageBox.Yes:
-                            root = tkinter.Tk()
-                            root.withdraw() # use to hide tkinter window
-                            if not self.filedialogIsOpen:
-                                self.filedialogIsOpen = True
-                                FilePath_SaveAs = filedialog.asksaveasfilename(title='Selecione a pasta para salvar seu resultado CSV', filetypes=[("CSV files", "*.csv")])
-                                self.filedialogIsOpen = False
-                                if not len(FilePath_SaveAs)>0:
-                                    self.MacroRunning = False # Cancela a execução da macro
-                                    QMessageBox.warning(self, 'Aviso', 'Execução cancelada.\nMotivo:\nO caminho do CSV não foi especificado.')
-                                else: ToSave = True
-                            if self.MacroRunning:
-                                if ToSave:
-                                    f = open(FilePath_SaveAs.replace(".csv","")+".csv", 'w', newline='', encoding='utf-8')
-                                    w = csv.writer(f)
-                                    w.writerow(["Execucao da macro "+self.Button_Macro6.text()])
-                                for ciclo in range(comandos[0][5]):
-                                    print("Ciclo",ciclo+1)
-                                    if ToSave:
-                                        w.writerow(["Ciclo "+str(ciclo+1)])
-                                        w.writerow(["h (mm)", "v (mm/s)", "a (mm/s2)", "\alpha (graus)","Atraso (s)"])
-                                    for comando in comandos:
-                                        self.DBManager.WriteOnDB([comando[0],comando[1],comando[2],comando[3]])
-                                        self.Table_Historico.clear()
-                                        self.InsertDataInTable_Historio()
-                                        self.Label_8.setText("Posição atual\n"+str(comando[0])+"mm")
-                                        self.Label_9.setText("Inclinação atual\n"+str(comando[1])+"°")
-                                        self.ArduinoComm.SendCommand([comando[0],comando[1],comando[2],comando[3],comando[4]])
-                                        if ToSave: w.writerow([comando[0],comando[1],comando[2],comando[3],comando[4]])
-                                if ToSave:
-                                    # Pedir Observação
-                                    observacao, done = QInputDialog.getText(self, 'Obs', 'Insira uma observação (opcional):')
-                                    # Salvar comandos e observação em CSV
-                                    w.writerow(["Observacao",observacao])
-                                    f.close()
-                            else:
-                                QMessageBox.warning(self, 'Aviso', 'Não há nada registrado nessa macro.')
-                    self.MacroRunning = False
-                else:
-                    QMessageBox.warning(self, 'Erro', 'Arduino não conectado.')
-
-        elif ButtonPressed == 'Macro7':
-            if self.ArduinoComm.Connected:
-                if not self.MacroRunning:
-                    self.MacroRunning = True
-                    ToSave = False
-                    comandos = self.DBManager.GetMacroMoves(6)
-                    comandos = comandos[::-1]
-                    if len(comandos)>0:
-                        MessageBox_Msg1 = QMessageBox()
-                        MessageBox_Msg1.setWindowTitle("Salvar em CSV")
-                        MessageBox_Msg1.setText("Deseja salvar os comandos em um arquivo CSV?")
-                        MessageBox_Msg1.setIcon(QMessageBox.Question)
-                        MessageBox_Msg1.setStandardButtons(QMessageBox.Yes|QMessageBox.No)
-                        MessageBox_Msg1.setDefaultButton(QMessageBox.No)
-                        MessageBox_Msg1.setWindowIcon(QIcon(".\images\save.png"))
-                        returnValue = MessageBox_Msg1.exec()
-                        if returnValue == QMessageBox.Yes:
-                            root = tkinter.Tk()
-                            root.withdraw() # use to hide tkinter window
-                            if not self.filedialogIsOpen:
-                                self.filedialogIsOpen = True
-                                FilePath_SaveAs = filedialog.asksaveasfilename(title='Selecione a pasta para salvar seu resultado CSV', filetypes=[("CSV files", "*.csv")])
-                                self.filedialogIsOpen = False
-                                if not len(FilePath_SaveAs)>0:
-                                    self.MacroRunning = False # Cancela a execução da macro
-                                    QMessageBox.warning(self, 'Aviso', 'Execução cancelada.\nMotivo:\nO caminho do CSV não foi especificado.')
-                                else: ToSave = True
-                            if self.MacroRunning:
-                                if ToSave:
-                                    f = open(FilePath_SaveAs.replace(".csv","")+".csv", 'w', newline='', encoding='utf-8')
-                                    w = csv.writer(f)
-                                    w.writerow(["Execucao da macro "+self.Button_Macro7.text()])
-                                for ciclo in range(comandos[0][5]):
-                                    print("Ciclo",ciclo+1)
-                                    if ToSave:
-                                        w.writerow(["Ciclo "+str(ciclo+1)])
-                                        w.writerow(["h (mm)", "v (mm/s)", "a (mm/s2)", "\alpha (graus)","Atraso (s)"])
-                                    for comando in comandos:
-                                        self.DBManager.WriteOnDB([comando[0],comando[1],comando[2],comando[3]])
-                                        self.Table_Historico.clear()
-                                        self.InsertDataInTable_Historio()
-                                        self.Label_8.setText("Posição atual\n"+str(comando[0])+"mm")
-                                        self.Label_9.setText("Inclinação atual\n"+str(comando[1])+"°")
-                                        self.ArduinoComm.SendCommand([comando[0],comando[1],comando[2],comando[3],comando[4]])
-                                        if ToSave: w.writerow([comando[0],comando[1],comando[2],comando[3],comando[4]])
-                                if ToSave:
-                                    # Pedir Observação
-                                    observacao, done = QInputDialog.getText(self, 'Obs', 'Insira uma observação (opcional):')
-                                    # Salvar comandos e observação em CSV
-                                    w.writerow(["Observacao",observacao])
-                                    f.close()
-                            else:
-                                QMessageBox.warning(self, 'Aviso', 'Não há nada registrado nessa macro.')
-                    self.MacroRunning = False
-                else:
-                    QMessageBox.warning(self, 'Erro', 'Arduino não conectado.')
-
-        elif ButtonPressed == 'Macro8':
-            if self.ArduinoComm.Connected:
-                if not self.MacroRunning:
-                    self.MacroRunning = True
-                    ToSave = False
-                    comandos = self.DBManager.GetMacroMoves(7)
-                    comandos = comandos[::-1]
-                    if len(comandos)>0:
-                        MessageBox_Msg1 = QMessageBox()
-                        MessageBox_Msg1.setWindowTitle("Salvar em CSV")
-                        MessageBox_Msg1.setText("Deseja salvar os comandos em um arquivo CSV?")
-                        MessageBox_Msg1.setIcon(QMessageBox.Question)
-                        MessageBox_Msg1.setStandardButtons(QMessageBox.Yes|QMessageBox.No)
-                        MessageBox_Msg1.setDefaultButton(QMessageBox.No)
-                        MessageBox_Msg1.setWindowIcon(QIcon(".\images\save.png"))
-                        returnValue = MessageBox_Msg1.exec()
-                        if returnValue == QMessageBox.Yes:
-                            root = tkinter.Tk()
-                            root.withdraw() # use to hide tkinter window
-                            if not self.filedialogIsOpen:
-                                self.filedialogIsOpen = True
-                                FilePath_SaveAs = filedialog.asksaveasfilename(title='Selecione a pasta para salvar seu resultado CSV', filetypes=[("CSV files", "*.csv")])
-                                self.filedialogIsOpen = False
-                                if not len(FilePath_SaveAs)>0:
-                                    self.MacroRunning = False # Cancela a execução da macro
-                                    QMessageBox.warning(self, 'Aviso', 'Execução cancelada.\nMotivo:\nO caminho do CSV não foi especificado.')
-                                else: ToSave = True
-                            if self.MacroRunning:
-                                if ToSave:
-                                    f = open(FilePath_SaveAs.replace(".csv","")+".csv", 'w', newline='', encoding='utf-8')
-                                    w = csv.writer(f)
-                                    w.writerow(["Execucao da macro "+self.Button_Macro8.text()])
-                                for ciclo in range(comandos[0][5]):
-                                    print("Ciclo",ciclo+1)
-                                    if ToSave:
-                                        w.writerow(["Ciclo "+str(ciclo+1)])
-                                        w.writerow(["h (mm)", "v (mm/s)", "a (mm/s2)", "\alpha (graus)","Atraso (s)"])
-                                    for comando in comandos:
-                                        self.DBManager.WriteOnDB([comando[0],comando[1],comando[2],comando[3]])
-                                        self.Table_Historico.clear()
-                                        self.InsertDataInTable_Historio()
-                                        self.Label_8.setText("Posição atual\n"+str(comando[0])+"mm")
-                                        self.Label_9.setText("Inclinação atual\n"+str(comando[1])+"°")
-                                        self.ArduinoComm.SendCommand([comando[0],comando[1],comando[2],comando[3],comando[4]])
-                                        if ToSave: w.writerow([comando[0],comando[1],comando[2],comando[3],comando[4]])
-                                if ToSave:
-                                    # Pedir Observação
-                                    observacao, done = QInputDialog.getText(self, 'Obs', 'Insira uma observação (opcional):')
-                                    # Salvar comandos e observação em CSV
-                                    w.writerow(["Observacao",observacao])
-                                    f.close()
-                            else:
-                                QMessageBox.warning(self, 'Aviso', 'Não há nada registrado nessa macro.')
-                    self.MacroRunning = False
-                else:
-                    QMessageBox.warning(self, 'Erro', 'Arduino não conectado.')
-
-        elif ButtonPressed == 'GravarMacro':
-            senha, done = QInputDialog.getText(self, 'Gravar macro', 'Senha:',QLineEdit.Password)
-            if done:
-                if senha == self.Senha:
-                    self.ClearPage()
-                    self.GravarMacro = "Gravar"
-                    self.CreatePageMain()
-                else:
-                    QMessageBox.warning(self, 'Erro', 'Senha incorreta.')
-
-        elif ButtonPressed == 'DeletarMacro':
-            senha, done = QInputDialog.getText(self, 'Deletar macro', 'Senha:',QLineEdit.Password)
-            if done:
-                if senha == self.Senha:
-                    MacroNames = self.DBManager.GetMacroNames()
-                    MacroEscolhida, done = QInputDialog.getItem(self, 'Deletar Macro', 'Macro a ser zerada:', MacroNames, editable=False)
-                    if done:
-                        IDX = MacroNames.index(MacroEscolhida)
-                        NomeJaExiste = list(filter(lambda IdxNome: IdxNome[1] == "Macro"+str(IDX+1) and not IdxNome[0] == IDX, enumerate(self.DBManager.GetMacroNames())))
-                        if not NomeJaExiste:
-                            self.DBManager.OverwriteMacro(IDX, [])
-                            self.DBManager.SetMacroName(IDX, "Macro"+str(IDX+1))
-
-                            MacroNames = self.DBManager.GetMacroNames()
-                            self.Button_Macro1.setText(MacroNames[0])
-                            self.Button_Macro2.setText(MacroNames[1])
-                            self.Button_Macro3.setText(MacroNames[2])
-                            self.Button_Macro4.setText(MacroNames[3])
-                            self.Button_Macro5.setText(MacroNames[4])
-                            self.Button_Macro6.setText(MacroNames[5])
-                            self.Button_Macro7.setText(MacroNames[6])
-                            self.Button_Macro8.setText(MacroNames[7])
-                        else:
-                            QMessageBox.warning(self, 'Erro', 'Existe outra macro com o nome que essa deveria receber\n(Macro'+str(IDX+1)+')')
-                else:
-                    QMessageBox.warning(self, 'Erro', 'Senha incorreta.')
-
-        elif ButtonPressed == 'MaisAceleracao':
-            self.AbortThread = False
-            self.Thread_MaisAceleracao = WorkerThread('Thread_MaisAceleracao', self)
-            self.Thread_MaisAceleracao.start()
-
-        elif ButtonPressed == 'MenosAceleracao':
-            self.AbortThread = False
-            self.Thread_MenosAceleracao = WorkerThread('Thread_MenosAceleracao', self)
-            self.Thread_MenosAceleracao.start()
-
-        elif ButtonPressed == 'MaisVelocidade':
-            self.AbortThread = False
-            self.Thread_MaisVelocidade = WorkerThread('Thread_MaisVelocidade', self)
-            self.Thread_MaisVelocidade.start()
-
-        elif ButtonPressed == 'MenosVelocidade':
-            self.AbortThread = False
-            self.Thread_MenosVelocidade = WorkerThread('Thread_MenosVelocidade', self)
-            self.Thread_MenosVelocidade.start()
-
-        elif ButtonPressed == 'MaisPosicao':
-            self.AbortThread = False
-            self.Thread_MaisPosicao = WorkerThread('Thread_MaisPosicao', self)
-            self.Thread_MaisPosicao.start()
-
-        elif ButtonPressed == 'MenosPosicao':
-            self.AbortThread = False
-            self.Thread_MenosPosicao = WorkerThread('Thread_MenosPosicao', self)
-            self.Thread_MenosPosicao.start()
-
-        elif ButtonPressed == 'MaisInclinacao':
-            self.AbortThread = False
-            self.Thread_MaisInclinacao = WorkerThread('Thread_MaisInclinacao', self)
-            self.Thread_MaisInclinacao.start()
-
-        elif ButtonPressed == 'MenosInclinacao':
-            self.AbortThread = False
-            self.Thread_MenosInclinacao = WorkerThread('Thread_MenosInclinacao', self)
-            self.Thread_MenosInclinacao.start()
-
-        elif ButtonPressed == 'MaxAceleracao':
-            self.Aceleracao = self.MaxAceleracao
-            self.TextBox_Aceleracao.setText(str(self.Aceleracao))
-
-        elif ButtonPressed == 'MedAceleracao':
-            self.Aceleracao = round((self.MaxAceleracao + self.MinAceleracao) / 2,1)
-            self.TextBox_Aceleracao.setText(str(self.Aceleracao))
-
-        elif ButtonPressed == 'MinAceleracao':
-            self.Aceleracao = self.MinAceleracao
-            self.TextBox_Aceleracao.setText(str(self.Aceleracao))
-
-        elif ButtonPressed == 'MaxVelocidade':
-            self.Velocidade = self.MaxVelocidade
-            self.TextBox_Velocidade.setText(str(self.Velocidade))
-
-        elif ButtonPressed == 'MedVelocidade':
-            self.Velocidade = round((self.MaxVelocidade + self.MinVelocidade) / 2,1)
-            self.TextBox_Velocidade.setText(str(self.Velocidade))
-
-        elif ButtonPressed == 'MinVelocidade':
-            self.Velocidade = self.MinVelocidade
-            self.TextBox_Velocidade.setText(str(self.Velocidade))
-
-        elif ButtonPressed == 'MaxPosicao':
-            self.Posicao = self.MaxPosicao
-            self.TextBox_Posicao.setText(str(self.Posicao))
-
-        elif ButtonPressed == 'MedPosicao':
-            self.Posicao = round((self.MaxPosicao + self.MinPosicao) / 2,1)
-            self.TextBox_Posicao.setText(str(self.Posicao))
-
-        elif ButtonPressed == 'MinPosicao':
-            self.Posicao = self.MinPosicao
-            self.TextBox_Posicao.setText(str(self.Posicao))
-
-        elif ButtonPressed == 'MaxInclinacao':
-            self.Inclinacao = self.MaxInclinacao
-            self.TextBox_Inclinacao.setText(str(self.Inclinacao))
-
-        elif ButtonPressed == 'MedInclinacao':
-            self.Inclinacao = round((self.MaxInclinacao + self.MinInclinacao) / 2,1)
-            self.TextBox_Inclinacao.setText(str(self.Inclinacao))
-
-        elif ButtonPressed == 'MinInclinacao':
-            self.Inclinacao = self.MinInclinacao
-            self.TextBox_Inclinacao.setText(str(self.Inclinacao))
-
-        elif ButtonPressed == 'Executar':
-            if self.ArduinoComm.Connected:
-                sucesso = self.ArduinoComm.SendCommand([self.Posicao, self.Velocidade, self.Aceleracao, self.Inclinacao, 0])
-                if sucesso:
-                    self.DBManager.WriteOnDB([self.Posicao, self.Velocidade, self.Aceleracao, self.Inclinacao])
-                    self.Table_Historico.clear()
-                    self.InsertDataInTable_Historio()
-                    self.Label_8.setText("Posição atual\n"+str(self.Posicao)+"mm")
-                    self.Label_9.setText("Inclinação atual\n"+str(self.Inclinacao)+"°")
-            else:
-                QMessageBox.warning(self, 'Erro', 'Arduino não conectado.')
-
-        elif ButtonPressed == 'LimparDB':
-            MessageBox_Msg1 = QMessageBox()
-            MessageBox_Msg1.setWindowTitle("Limpar DB")
-            MessageBox_Msg1.setText("Tem certeza que deseja\nlimpar o histórico de comandos?")
-            MessageBox_Msg1.setIcon(QMessageBox.Warning)
-            MessageBox_Msg1.setStandardButtons(QMessageBox.Yes|QMessageBox.Cancel)
-            MessageBox_Msg1.setDefaultButton(QMessageBox.Cancel)
-            MessageBox_Msg1.setWindowIcon(QIcon(".\images\Dambreak IHM icon.png"))
-
-            returnValue = MessageBox_Msg1.exec()
-            if returnValue == QMessageBox.Yes:
-                self.DBManager.ClearDB()
-                self.Table_Historico.clear()
-
-        elif ButtonPressed == "ComboBox_Macros":
-            IDX = self.ComboBox_Macros.currentIndex()
-            NovoNome = self.ComboBox_Macros.currentText()
-            if len(NovoNome)<11:
-                NomeJaExiste = list(filter(lambda nome: nome == NovoNome, self.DBManager.GetMacroNames()))
-                if not NomeJaExiste:
-                    self.DBManager.SetMacroName(IDX, NovoNome)
-
-            self.ComboBox_Macros.clear()
-            for MacroName in self.DBManager.GetMacroNames():
-                self.ComboBox_Macros.addItem(MacroName)
-            self.ComboBox_Macros.setCurrentIndex(IDX)
-
-        elif ButtonPressed == "DeletarAcao":
-            self.dataMacro = self.dataMacro[::-1]
-            self.dataMacro = self.dataMacro[:-1]
-            self.dataMacro = self.dataMacro[::-1]
-
-            self.Table_Macro.setRowCount(len(self.dataMacro))
-
-            for i, item in enumerate(self.dataMacro):
-                for j in range(len(item)):
-                    if not j == 6:
-                        it = self.Table_Macro.item(i, j)
-                        text = str(item[j])
-                        it = QTableWidgetItem(text)
-                        if not j == 4:
-                            it.setFlags(Qt.ItemFlags(Qt.ItemIsSelectable)) # Desabilita selecionar o item
-                            it.setFlags(it.flags() & ~Qt.ItemIsEditable) # Desabilita a edição do item
-                        it.setTextAlignment(Qt.AlignCenter)
-                        it.setForeground(QBrush(QColor('black')))
-                        self.Table_Macro.setItem(i, j, it)
-            self.Table_Macro.adjustSize()
-            for i in range(5):
-                self.Table_Macro.setColumnWidth(i, int(self.frameGeometry().width()*2/7/5))
-
-        elif ButtonPressed == "RegistrarAcao":
-            LastMove = self.DBManager.GetAllMoves()
-            if len(LastMove)>0:
-                LastMove = LastMove[-1]
-                self.dataMacro = self.dataMacro[::-1]
-                self.dataMacro.append((LastMove[0],LastMove[1],LastMove[2],LastMove[3],1.,int(self.TextBox_Ciclos.text().replace(" ciclos",""))))
-                self.dataMacro = self.dataMacro[::-1]
-
-                self.Table_Macro.setRowCount(len(self.dataMacro))
-
-                for i, item in enumerate(self.dataMacro):
-                    for j in range(len(item)):
-                        if not j == 6:
-                            it = self.Table_Macro.item(i, j)
-                            text = str(item[j])
-                            it = QTableWidgetItem(text)
-                            if not j == 4:
-                                it.setFlags(Qt.ItemFlags(Qt.ItemIsSelectable)) # Desabilita selecionar o item
-                                it.setFlags(it.flags() & ~Qt.ItemIsEditable) # Desabilita a edição do item
-                            it.setTextAlignment(Qt.AlignCenter)
-                            it.setForeground(QBrush(QColor('black')))
-                            self.Table_Macro.setItem(i, j, it)
-                self.Table_Macro.adjustSize()
-                for i in range(5):
-                    self.Table_Macro.setColumnWidth(i, int(self.frameGeometry().width()*2/7/5))
-
-            else:
-                QMessageBox.warning(self, 'Aviso', 'Não há comando para registrar.')
-
-        elif ButtonPressed == "TestarMacro":
-            if self.ArduinoComm.Connected:
-                comandos = self.dataMacro[::-1]
-                if len(comandos)>0:
-                    for ciclo in range(comandos[0][5]):
-                        print("Ciclo",ciclo+1)
-                        for comando in comandos:
-                            sleep(comando[4])
-                            self.ArduinoComm.SendCommand([comando[0],comando[1],comando[2],comando[3],0])
-            else:
-                QMessageBox.warning(self, 'Erro', 'Arduino não conectado.')
-
-        elif ButtonPressed == "CancelarMacro":
-            self.ClearPage()
-            self.GravarMacro = "normal"
-            self.CreatePageMain()
-
-        elif ButtonPressed == "RegistrarMacro":
-            comandos = self.dataMacro
-            self.DBManager.OverwriteMacro(self.ComboBox_Macros.currentIndex(), comandos)
-
-            IDX = self.ComboBox_Macros.currentIndex() # Roda isso de novo no caso o usuário não deu enter para renomear a macro
-            NovoNome = self.ComboBox_Macros.currentText()
-            if len(NovoNome)<11:
-                self.DBManager.SetMacroName(IDX, NovoNome)
-
-            self.ClearPage()
-            self.GravarMacro = "normal"
-            self.CreatePageMain()
-
-        elif ButtonPressed == "ArduinoConnect":
-            if sys.platform.startswith('win'):
-                ports = ['COM%s' % (i + 1) for i in range(256)]
-            elif sys.platform.startswith('linux') or sys.platform.startswith('cygwin'):
-                # this excludes your current terminal "/dev/tty"
-                ports = glob.glob('/dev/tty[A-Za-z]*')
-            elif sys.platform.startswith('darwin'):
-                ports = glob.glob('/dev/tty.*')
-            else:
-                raise EnvironmentError('Unsupported platform')
-
-            Ports = []
-            for port in ports:
-                try:
-                    s = serial.Serial(port)
-                    s.close()
-                    Ports.append(port)
-                except (OSError, serial.SerialException):
-                    pass
-                
-            if len(Ports) > 0:
-                port, done = QInputDialog.getItem(self, 'Porta', 'Porta onde se encontra o Arduino:', Ports, editable=False)
-                if done:
-                    self.ArduinoComm.Connect(port)
-                    if self.ArduinoComm.Connected == False:
-                        QMessageBox.warning(self, 'Erro', 'Impossível se conectar ao arduino.')
-                    else:
-                        # Save in DB last port used
-                        self.DBManager.UpdateCache_Port(port)
-            else:
-                QMessageBox.warning(self, 'Erro', 'Nenhuma porta serial detectada.')
-
-    def OnButtonReleased(self, ButtonReleased):
-            self.AbortThread = True
-
-    def Checkbox_ChangedState(self, precisao):
-        if precisao == "1":
-            self.Precisao = "1"
-            self.PrecisaoAceleracao = 0.1 # (mm/s²)
-            self.PrecisaoVelocidade = 0.1 # (mm/s)
-            self.PrecisaoPosicao = 0.1 # (mm)
-        elif precisao == "1/2":
-            self.Precisao = "1/2"
-            self.PrecisaoAceleracao = 0.1 # (mm/s²)
-            self.PrecisaoVelocidade = 0.1 # (mm/s)
-            self.PrecisaoPosicao = 0.1 # (mm)
-        elif precisao == "1/4":
-            self.Precisao = "1/4"
-            self.PrecisaoAceleracao = 0.1 # (mm/s²)
-            self.PrecisaoVelocidade = 0.1 # (mm/s)
-            self.PrecisaoPosicao = 0.1 # (mm)
-        elif precisao == "1/8":
-            self.Precisao = "1/8"
-            self.PrecisaoAceleracao = 0.1 # (mm/s²)
-            self.PrecisaoVelocidade = 0.1 # (mm/s)
-            self.PrecisaoPosicao = 0.1 # (mm)
-        elif precisao == "1/16":
-            self.Precisao = "1/16"
-            self.PrecisaoAceleracao = 0.1 # (mm/s²)
-            self.PrecisaoVelocidade = 0.1 # (mm/s)
-            self.PrecisaoPosicao = 0.1 # (mm)
-        elif precisao == "1/32":
-            self.Precisao = "1/32"
-            self.PrecisaoAceleracao = 0.1 # (mm/s²)
-            self.PrecisaoVelocidade = 0.1 # (mm/s)
-            self.PrecisaoPosicao = 0.1 # (mm)
-        self.DBManager.UpdateCache_Precisao(self.Precisao)
-
-    def OnValueChanged_Aceleracao(self, text):
-        def closest(lst, K):
-            return lst[min(range(len(lst)), key = lambda i: abs(lst[i]-K))]
-
-        if float(self.TextBox_Aceleracao.text().replace("mm/s²","")) <= self.MaxAceleracao and float(self.TextBox_Aceleracao.text().replace("mm/s²","")) >= self.MinAceleracao:
-            self.Aceleracao = round(float(self.TextBox_Aceleracao.text().replace("mm/s²","")), 1)
-        else:
-            self.Aceleracao = round(closest([self.MinAceleracao, self.MaxAceleracao], float(self.TextBox_Aceleracao.text().replace("mm/s²",""))), 1)
-            self.TextBox_Aceleracao.setText(str(self.Aceleracao))
-
-        self.DBManager.UpdateCache_Aceleracao(self.Aceleracao)
-
-    def OnValueChanged_Velocidade(self, text):
-        def closest(lst, K):
-            return lst[min(range(len(lst)), key = lambda i: abs(lst[i]-K))]
-
-        if float(self.TextBox_Velocidade.text().replace("mm/s","")) <= self.MaxVelocidade and float(self.TextBox_Velocidade.text().replace("mm/s","")) >= self.MinVelocidade:
-            self.Velocidade = round(float(self.TextBox_Velocidade.text().replace("mm/s","")), 1)
-        else:
-            self.Velocidade = round(closest([self.MinVelocidade, self.MaxVelocidade], float(self.TextBox_Velocidade.text().replace("mm/s",""))), 1)
-            self.TextBox_Velocidade.setText(str(self.Velocidade))
-
-        self.DBManager.UpdateCache_Velocidade(self.Velocidade)
-
-    def OnValueChanged_Posicao(self, text):
-        def closest(lst, K):
-            return lst[min(range(len(lst)), key = lambda i: abs(lst[i]-K))]
-
-        if float(self.TextBox_Posicao.text().replace("mm","")) <= self.MaxPosicao and float(self.TextBox_Posicao.text().replace("mm","")) >= self.MinPosicao:
-            self.Posicao = round(float(self.TextBox_Posicao.text().replace("mm","")), 1)
-        else:
-            self.Posicao = round(closest([self.MinPosicao, self.MaxPosicao], float(self.TextBox_Posicao.text().replace("mm",""))), 1)
-            self.TextBox_Posicao.setText(str(self.Posicao))
-
-        self.DBManager.UpdateCache_Posicao(self.Posicao)
-
-    def OnValueChanged_Inclinacao(self, text):
-        def closest(lst, K):
-            return lst[min(range(len(lst)), key = lambda i: abs(lst[i]-K))]
-
-        if float(self.TextBox_Inclinacao.text().replace("°","")) <= self.MaxInclinacao and float(self.TextBox_Inclinacao.text().replace("°","")) >= self.MinInclinacao:
-            self.Inclinacao = round(float(self.TextBox_Inclinacao.text().replace("°","")), 1)
-        else:
-            self.Inclinacao = round(closest([self.MinInclinacao, self.MaxInclinacao], float(self.TextBox_Inclinacao.text().replace("°",""))), 1)
-            self.TextBox_Inclinacao.setText(str(self.Inclinacao))
-
-        self.DBManager.UpdateCache_Inclinacao(self.Inclinacao)
-
-    def OnValueChanged_Ciclos(self, text):
+    # ------------------------------------------------------------------
+    # Screen & font initialization
+    # ------------------------------------------------------------------
+    def _init_screen_metrics(self):
+        """Initialize screen dimensions and font cache."""
         try:
-            if int(self.TextBox_Ciclos.text().replace(" ciclos","")) >= 0:
-                self.Ciclos = int(self.TextBox_Ciclos.text().replace(" ciclos",""))
+            import ctypes
+            user32 = ctypes.windll.user32
+            self.screen_width = user32.GetSystemMetrics(0)
+            self.screen_height = user32.GetSystemMetrics(1)
+        except Exception:
+            self.screen_width = 1920
+            self.screen_height = 1080
+
+        for key, (name, size, bold) in FONTS.items():
+            font = QFont(name, size)
+            font.setBold(bold)
+            self._fonts[key] = font
+
+    # ------------------------------------------------------------------
+    # Base window setup
+    # ------------------------------------------------------------------
+    def _setup_base_window(self):
+        """Configure the main window properties."""
+        self.setWindowTitle("Dambreak")
+        self.setWindowIcon(QIcon(ICON_PATH))
+        self.setAutoFillBackground(True)
+        min_w = int(self.screen_width * 0.55)
+        min_h = int(self.screen_height * 0.75)
+        self.setMinimumSize(QSize(min_w, min_h))
+        self.showMaximized()
+
+        # Apply initial theme
+        bg_color = THEMES[self.background_style]["background"]
+        palette = self.palette()
+        palette.setColor(self.backgroundRole(), QColor(bg_color))
+        self.setPalette(palette)
+
+    # ------------------------------------------------------------------
+    # UI building
+    # ------------------------------------------------------------------
+    def _build_ui(self):
+        """Build the complete UI layout."""
+        grid = QGridLayout()
+        self.setLayout(grid)
+        self._grid = grid
+
+        if self.recording_mode == "Gravar":
+            self._build_macro_editor_layout(grid)
+        else:
+            self._build_main_layout(grid)
+
+    # ------------------------------------------------------------------
+    # Main layout (normal mode)
+    # ------------------------------------------------------------------
+    def _build_main_layout(self, grid):
+        """Build the main layout with macros, commands, and status panels."""
+        # -- Title bar --
+        title = create_label("Controle de Dambreak", "largest")
+        title.setFixedHeight(int(self.screen_height * SCREEN_RATIOS["title_height"]))
+
+        grid.addWidget(title, 0, 0, 1, 3, Qt.AlignCenter)
+
+        # -- Theme toggle button --
+        theme_btn = create_button()
+        theme_btn.setFixedWidth(int(self.screen_width * SCREEN_RATIOS["theme_button_width"]))
+        theme_btn.setIcon(QIcon(ICON_PATH))
+        theme_btn.setIconSize(QSize(
+            int(self.frameGeometry().height() / 15),
+            int(self.frameGeometry().height() / 15),
+        ))
+        theme_btn.pressed.connect(lambda: self._handle_command("Mudar tema"))
+        grid.addWidget(theme_btn, 0, 0, 1, 3, Qt.AlignLeft | Qt.AlignTop)
+
+        # -- Panels --
+        macros_layout = self._build_macros_panel()
+        commands_layout = self._build_commands_panel()
+        status_layout = self._build_status_panel()
+
+        # -- Top-right buttons --
+        clear_db_btn = self._create_clear_db_button()
+        version_btn = self._create_version_button()
+        arduino_btn = self._create_arduino_button()
+
+        grid.addWidget(create_label("Macros", "section"), 1, 0, Qt.AlignHCenter)
+        grid.addLayout(macros_layout, 2, 0, Qt.AlignHCenter)
+
+        grid.addWidget(create_label("Comandos manuais", "section"), 1, 1, Qt.AlignHCenter)
+        grid.addLayout(commands_layout, 2, 1, Qt.AlignHCenter)
+
+        grid.addWidget(create_label("Status", "section"), 1, 2, Qt.AlignHCenter)
+        grid.addLayout(status_layout, 2, 2, Qt.AlignHCenter)
+
+        grid.addWidget(clear_db_btn, 0, 2, Qt.AlignTop | Qt.AlignRight)
+        grid.addWidget(version_btn, 0, 2, Qt.AlignBottom | Qt.AlignRight)
+        grid.addWidget(arduino_btn, 0, 2, Qt.AlignTop | Qt.AlignRight)
+
+    # ------------------------------------------------------------------
+    # Macros panel
+    # ------------------------------------------------------------------
+    def _build_macros_panel(self):
+        """Build the macros panel with 8 macro buttons."""
+        layout = QVBoxLayout()
+        layout.setSpacing(50)
+
+        macro_btns_layout = QHBoxLayout()
+        self._macro_buttons = []
+
+        for i in range(8):
+            btn_text = self.macro_names[i] if i < len(self.macro_names) else f"Macro{i + 1}"
+            btn = create_button(btn_text, font_key="xxlarge")
+            btn_size = int(self.frameGeometry().height() * SCREEN_RATIOS["button_size"])
+            btn.setFixedSize(btn_size, btn_size)
+            btn.pressed.connect(lambda checked, idx=i: self._handle_command(f"Macro{idx + 1}"))
+            self._macro_buttons.append(btn)
+            macro_btns_layout.addWidget(btn)
+
+        # Arrange in rows of 2
+        for row in range(4):
+            row_layout = QHBoxLayout()
+            for col in range(2):
+                idx = row * 2 + col
+                if idx < 8:
+                    row_layout.addWidget(self._macro_buttons[idx])
+            layout.addLayout(row_layout)
+
+        # Spacer
+        spacer = QLabel("")
+        spacer.setFixedHeight(int(self.screen_height * SCREEN_RATIOS["spacer_height"]))
+        layout.addWidget(spacer)
+
+        # Record / Delete buttons
+        record_btn = create_button("Editar\nmacros", "large")
+        record_btn.setFixedWidth(int(self.frameGeometry().width() / 7))
+        record_btn.pressed.connect(lambda: self._handle_command("GravarMacro"))
+
+        delete_macro_btn = create_button("Deletar\nmacros", "large")
+        delete_macro_btn.setFixedWidth(int(self.frameGeometry().width() / 7))
+        delete_macro_btn.pressed.connect(lambda: self._handle_command("DeletarMacro"))
+
+        bottom_layout = QHBoxLayout()
+        bottom_layout.addWidget(record_btn)
+        bottom_layout.addWidget(delete_macro_btn)
+        layout.addLayout(bottom_layout)
+
+        return layout
+
+    # ------------------------------------------------------------------
+    # Commands panel
+    # ------------------------------------------------------------------
+    def _build_commands_panel(self):
+        """Build the manual commands panel."""
+        layout = QVBoxLayout()
+
+        # -- Precision selection --
+        layout.addWidget(create_label("Precisao", "xlarge"))
+        self._precision_radios, self._precision_group = create_precision_radios(
+            PRECISION_OPTIONS, self
+        )
+        prec_layout = QHBoxLayout()
+        for radio in self._precision_radios:
+            prec_layout.addWidget(radio)
+        layout.addLayout(prec_layout)
+
+        # -- Parameter controls --
+        self._text_boxes = {}
+        self._increment_buttons = {}
+        self._decrement_buttons = {}
+        self._max_buttons = {}
+        self._med_buttons = {}
+        self._min_buttons = {}
+
+        params = [
+            ("acceleration", "Aceleracao max", "MaisAceleracao", "MenosAceleracao",
+             "MaxAceleracao", "MedAceleracao", "MinAceleracao"),
+            ("velocity", "Velocidade max", "MaisVelocidade", "MenosVelocidade",
+             "MaxVelocidade", "MedVelocidade", "MinVelocidade"),
+            ("position", "Ir para posicao", "MaisPosicao", "MenosPosicao",
+             "MaxPosicao", "MedPosicao", "MinPosicao"),
+            ("inclination", "Ir para inclinacao", "MaisInclinacao", "MenosInclinacao",
+             "MaxInclinacao", "MedInclinacao", "MinInclinacao"),
+        ]
+
+        for param_key, label_text, inc_cmd, dec_cmd, max_cmd, med_cmd, min_cmd in params:
+            textbox = create_textbox(
+                text=str(getattr(self, param_key)),
+                font_key="medium",
+                input_mask=INPUT_MASKS[param_key],
+            )
+            textbox.setEnabled(False)
+            textbox.setFixedWidth(int(self.frameGeometry().width() * SCREEN_RATIOS["text_field_width"]))
+            self._text_boxes[param_key] = textbox
+
+            inc_btn = create_button("+", "large")
+            inc_btn.setFixedWidth(int(self.frameGeometry().width() / 20))
+            inc_btn.pressed.connect(lambda checked, c=inc_cmd: self._handle_command(c))
+            inc_btn.released.connect(lambda checked, c=inc_cmd: self._handle_command(f"{c}Released"))
+            self._increment_buttons[param_key] = inc_btn
+
+            dec_btn = create_button("-", "large")
+            dec_btn.setFixedWidth(int(self.frameGeometry().width() / 20))
+            dec_btn.pressed.connect(lambda checked, c=dec_cmd: self._handle_command(c))
+            dec_btn.released.connect(lambda checked, c=dec_cmd: self._handle_command(f"{c}Released"))
+            self._decrement_buttons[param_key] = dec_btn
+
+            max_btn = create_button("Max", "large")
+            max_btn.setFixedWidth(int(self.frameGeometry().width() / 15))
+            max_btn.pressed.connect(lambda checked, c=max_cmd: self._handle_command(c))
+            self._max_buttons[param_key] = max_btn
+
+            med_btn = create_button("Med", "large")
+            med_btn.setFixedWidth(int(self.frameGeometry().width() / 15))
+            med_btn.pressed.connect(lambda checked, c=med_cmd: self._handle_command(c))
+            self._med_buttons[param_key] = med_btn
+
+            min_btn = create_button("Min", "large")
+            min_btn.setFixedWidth(int(self.frameGeometry().width() / 15))
+            min_btn.pressed.connect(lambda checked, c=min_cmd: self._handle_command(c))
+            self._min_buttons[param_key] = min_btn
+
+            build_control_row(
+                self, param_key, label_text, textbox,
+                inc_btn, dec_btn, max_btn, med_btn, min_btn, layout,
+            )
+
+            # Connect text change handler
+            textbox.textChanged.connect(lambda text, p=param_key: self._on_value_changed(p, text))
+
+        # Spacer
+        spacer = QLabel("")
+        spacer.setFixedHeight(int(self.screen_height * SCREEN_RATIOS["spacer_height"]))
+        layout.addWidget(spacer)
+
+        # Execute button
+        execute_btn = create_button("Executar\ncomando", "heading")
+        execute_btn.setFixedWidth(int(self.frameGeometry().width() * SCREEN_RATIOS["execute_button_width"]))
+        execute_btn.setFixedHeight(int(self.screen_height / 10))
+        execute_btn.setStyleSheet("background-color: green; border: none; outline: none;")
+        execute_btn.pressed.connect(lambda: self._handle_command("Executar"))
+        layout.addWidget(execute_btn, alignment=Qt.AlignHCenter)
+
+        return layout
+
+    # ------------------------------------------------------------------
+    # Status panel
+    # ------------------------------------------------------------------
+    def _build_status_panel(self):
+        """Build the status panel showing current values and command history."""
+        layout = QVBoxLayout()
+
+        self.label_position = create_label(
+            f"Posicao atual\n{self.position}mm", "xlarge"
+        )
+        self.label_inclination = create_label(
+            f"Inclinacao atual\n{self.inclination}\u00b0", "xlarge"
+        )
+        self.label_history = create_label("Historico de comandos", "xlarge")
+
+        self.history_table = QTableWidget()
+        self.history_data = self.db_manager.get_all_moves()[::-1]
+        setup_history_table(self.history_table, self.history_data, self.screen_width)
+
+        layout.addWidget(self.label_position)
+        layout.addWidget(self.label_inclination)
+        layout.addWidget(self.label_history)
+        layout.addWidget(self.history_table)
+
+        return layout
+
+    # ------------------------------------------------------------------
+    # Macro editor layout (recording mode)
+    # ------------------------------------------------------------------
+    def _build_macro_editor_layout(self, grid):
+        """Build the macro editor layout (shown when recording macros)."""
+        # -- Title bar --
+        title = create_label("Controle de Dambreak", "largest")
+        title.setFixedHeight(int(self.screen_height * SCREEN_RATIOS["title_height"]))
+        grid.addWidget(title, 0, 0, 1, 3, Qt.AlignCenter)
+
+        # -- Theme toggle --
+        theme_btn = create_button()
+        theme_btn.setFixedWidth(int(self.screen_width * SCREEN_RATIOS["theme_button_width"]))
+        theme_btn.setIcon(QIcon(ICON_PATH))
+        theme_btn.setIconSize(QSize(
+            int(self.frameGeometry().height() / 15),
+            int(self.frameGeometry().height() / 15),
+        ))
+        theme_btn.pressed.connect(lambda: self._handle_command("Mudar tema"))
+        grid.addWidget(theme_btn, 0, 0, 1, 3, Qt.AlignLeft | Qt.AlignTop)
+
+        # -- Macro panel --
+        macros_layout = QVBoxLayout()
+        macros_layout.setSpacing(50)
+
+        # Macro name combobox
+        self.macro_combobox = QComboBox()
+        self.macro_combobox.setStyleSheet("background-color: white; border: none; outline: none;")
+        self.macro_combobox.setFixedWidth(int(self.frameGeometry().width() * SCREEN_RATIOS["macro_panel_width"]))
+        self._macro_edit = QLineEdit(self)
+        self._macro_edit.setFont(self._fonts["xlarge"])
+        self._macro_edit.setStyleSheet("background-color: white; border: none; outline: none;")
+        self._macro_edit.setAlignment(Qt.AlignCenter)
+        self._macro_edit.returnPressed.connect(lambda: self._handle_command("ComboBox_Macros"))
+        self.macro_combobox.setLineEdit(self._macro_edit)
+        self.macro_combobox.setFont(self._fonts["xlarge"])
+        self.macro_combobox.setCursor(QCursor(Qt.PointingHandCursor))
+        for name in self.db_manager.get_macro_names():
+            self.macro_combobox.addItem(name)
+        macros_layout.addWidget(self.macro_combobox)
+
+        # Macro table
+        self.macro_table = QTableWidget()
+        self.macro_data = self.db_manager.get_macro_moves(self.macro_combobox.currentIndex())
+        if self.macro_data:
+            self._cycles_textbox.setText(str(self.macro_data[0][5]))
+        setup_macro_table(self.macro_table, self.macro_data, SCREEN_RATIOS["macro_panel_width"])
+        macros_layout.addWidget(self.macro_table)
+
+        # Record / Delete action buttons
+        del_action_btn = create_button("Deletar\nultima acao", "heading")
+        del_action_btn.setFixedWidth(int(self.frameGeometry().width() / 7))
+        del_action_btn.setStyleSheet("background-color: red; border: none; outline: none;")
+        del_action_btn.pressed.connect(lambda: self._handle_command("DeletarAcao"))
+
+        reg_action_btn = create_button("Registrar\nultima acao", "heading")
+        reg_action_btn.setFixedWidth(int(self.frameGeometry().width() / 7))
+        reg_action_btn.setStyleSheet("background-color: green; border: none; outline: none;")
+        reg_action_btn.pressed.connect(lambda: self._handle_command("RegistrarAcao"))
+
+        row1 = QHBoxLayout()
+        row1.addWidget(del_action_btn)
+        row1.addWidget(reg_action_btn)
+        macros_layout.addLayout(row1)
+
+        # Cycle count and test button
+        self._cycles_textbox = create_textbox("1", "large", "99 ciclos")
+        self._cycles_textbox.setFixedWidth(int(self.frameGeometry().width() / 7))
+        self._cycles_textbox.textChanged.connect(self._on_cycles_changed)
+
+        test_btn = create_button("Testar\nmacro", "heading")
+        test_btn.setFixedWidth(int(self.frameGeometry().width() / 7))
+        test_btn.pressed.connect(lambda: self._handle_command("TestarMacro"))
+
+        row2 = QHBoxLayout()
+        row2.addWidget(self._cycles_textbox)
+        row2.addWidget(test_btn)
+        macros_layout.addLayout(row2)
+
+        # Save / Cancel buttons
+        save_btn = create_button("Gravar\nmacro", "heading")
+        save_btn.setFixedWidth(int(self.frameGeometry().width() / 7))
+        save_btn.pressed.connect(lambda: self._handle_command("RegistrarMacro"))
+
+        cancel_btn = create_button("Cancelar\ngravacao", "heading")
+        cancel_btn.setFixedWidth(int(self.frameGeometry().width() / 7))
+        cancel_btn.pressed.connect(lambda: self._handle_command("CancelarMacro"))
+
+        row3 = QHBoxLayout()
+        row3.addWidget(save_btn)
+        row3.addWidget(cancel_btn)
+        macros_layout.addLayout(row3)
+
+        grid.addWidget(create_label("Macros", "section"), 1, 0, Qt.AlignHCenter)
+        grid.addLayout(macros_layout, 2, 0, Qt.AlignHCenter)
+
+        # -- Commands panel (same as main) --
+        commands_layout = self._build_commands_panel()
+        grid.addWidget(create_label("Comandos manuais", "section"), 1, 1, Qt.AlignHCenter)
+        grid.addLayout(commands_layout, 2, 1, Qt.AlignHCenter)
+
+        # -- Status panel --
+        status_layout = self._build_status_panel()
+        grid.addWidget(create_label("Status", "section"), 1, 2, Qt.AlignHCenter)
+        grid.addLayout(status_layout, 2, 2, Qt.AlignHCenter)
+
+        # -- Top-right buttons --
+        clear_db_btn = self._create_clear_db_button()
+        version_btn = self._create_version_button()
+        arduino_btn = self._create_arduino_button()
+        grid.addWidget(clear_db_btn, 0, 2, Qt.AlignTop | Qt.AlignRight)
+        grid.addWidget(version_btn, 0, 2, Qt.AlignBottom | Qt.AlignRight)
+        grid.addWidget(arduino_btn, 0, 2, Qt.AlignTop | Qt.AlignRight)
+
+    # ------------------------------------------------------------------
+    # Button factory helpers
+    # ------------------------------------------------------------------
+    def _create_clear_db_button(self):
+        """Create the database clear button."""
+        btn = create_button()
+        btn.setFixedWidth(int(self.screen_width * SCREEN_RATIOS["theme_button_width"]))
+        btn.setIcon(QIcon(THEMES[self.background_style]["clear_db_icon"]))
+        btn.setIconSize(QSize(
+            int(self.frameGeometry().height() / 20),
+            int(self.frameGeometry().height() / 20),
+        ))
+        btn.pressed.connect(lambda: self._handle_command("LimparDB"))
+        return btn
+
+    def _create_version_button(self):
+        """Create the version info button."""
+        btn = create_button()
+        btn.setIcon(QIcon(INFO_ICON))
+        btn.setCursor(QCursor(Qt.PointingHandCursor))
+        btn.setStyleSheet("background-color: none; border: none; outline: none;")
+        btn.pressed.connect(
+            lambda: QMessageBox.about(self, "Informacoes da versao do APP", self.app_version_info)
+        )
+        return btn
+
+    def _create_arduino_button(self):
+        """Create the Arduino connect button."""
+        btn = create_button()
+        btn.setIcon(QIcon(ARDUINO_ICON))
+        btn.setCursor(QCursor(Qt.PointingHandCursor))
+        btn.setStyleSheet("background-color: none; border: none; outline: none;")
+        btn.pressed.connect(lambda: self._handle_command("ArduinoConnect"))
+        return btn
+
+    # ------------------------------------------------------------------
+    # Cached values restoration
+    # ------------------------------------------------------------------
+    def _restore_cached_values(self):
+        """Restore parameter values from the database cache."""
+        self.precision = self.db_manager.get_cache_precision()
+        self.acceleration = self.db_manager.get_cache_acceleration()
+        self.velocity = self.db_manager.get_cache_velocity()
+        self.position = self.db_manager.get_cache_position()
+        self.inclination = self.db_manager.get_cache_inclination()
+
+        # Set precision radio
+        for radio in self._precision_radios:
+            if radio.text() == self.precision:
+                radio.setChecked(True)
+                break
+
+        # Update text boxes
+        self._text_boxes["acceleration"].setText(str(self.acceleration))
+        self._text_boxes["velocity"].setText(str(self.velocity))
+        self._text_boxes["position"].setText(str(self.position))
+        self._text_boxes["inclination"].setText(str(self.inclination))
+
+    # ------------------------------------------------------------------
+    # Theme application
+    # ------------------------------------------------------------------
+    def _apply_theme(self):
+        """Apply the current theme to all widgets."""
+        theme = self.theme_manager.current_theme
+        bg = theme["background"]
+        bg2 = theme["background_secondary"]
+        font_color = theme["font"]
+
+        # Window palette
+        palette = self.palette()
+        palette.setColor(self.backgroundRole(), QColor(bg))
+        self.setPalette(palette)
+
+        # Title and section labels
+        for attr in ["label_position", "label_inclination", "label_history"]:
+            widget = getattr(self, attr, None)
+            if widget and isinstance(widget, QLabel):
+                widget.setStyleSheet(f"color: {font_color}")
+
+        # Update clear DB icon
+        clear_db_btn = self._widgets.get("clear_db_btn")
+        if clear_db_btn:
+            clear_db_btn.setIcon(QIcon(theme["clear_db_icon"]))
+
+        # Update all buttons
+        for btn in self._macro_buttons:
+            btn.setStyleSheet(f"background-color: {bg2}; border: none; outline: none;")
+
+        # Update text boxes
+        for textbox in self._text_boxes.values():
+            textbox.setStyleSheet(f"background-color: {bg2}; color: black; border: none; outline: none;")
+
+        # Update precision radios
+        for radio in self._precision_radios:
+            radio.setStyleSheet(f"background-color: {bg2}; border: none; outline: none;")
+
+        # Update combobox
+        if hasattr(self, "macro_combobox"):
+            self.macro_combobox.setStyleSheet(f"background-color: {bg2}; border: none; outline: none;")
+        if hasattr(self, "_macro_edit"):
+            self._macro_edit.setStyleSheet(f"background-color: {bg2}; border: none; outline: none;")
+
+        # Update cycle textbox
+        if hasattr(self, "_cycles_textbox"):
+            self._cycles_textbox.setStyleSheet(f"background-color: {bg2}; border: none; outline: none;")
+
+    # ------------------------------------------------------------------
+    # Command dispatch (replaces the giant if-elif chain)
+    # ------------------------------------------------------------------
+    def _handle_command(self, command_name):
+        """Dispatch a command to the appropriate handler.
+
+        Parameters
+        ----------
+        command_name : str
+            The command identifier (e.g. "Macro1", "MaisAceleracao", etc.).
+        """
+        handler = self._get_command_handler(command_name)
+        if handler:
+            handler()
+
+    def _get_command_handler(self, command_name):
+        """Return the handler method for a given command, or None."""
+        # Theme
+        if command_name == "Mudar tema":
+            return self._handle_theme
+
+        # Macro execution (Macro1-Macro8)
+        if command_name.startswith("Macro") and command_name[5:].isdigit():
+            macro_idx = int(command_name[5]) - 1
+            return lambda: self._execute_macro(macro_idx)
+
+        # Macro management
+        if command_name == "GravarMacro":
+            return self._handle_gravar_macro
+        if command_name == "DeletarMacro":
+            return self._handle_deletar_macro
+
+        # Parameter increment/decrement (button press)
+        inc_map = {
+            "MaisAceleracao": "acceleration",
+            "MaisVelocidade": "velocity",
+            "MaisPosicao": "position",
+            "MaisInclinacao": "inclination",
+        }
+        if command_name in inc_map:
+            return lambda param=inc_map[command_name]: self._start_increment_thread(param)
+
+        dec_map = {
+            "MenosAceleracao": "acceleration",
+            "MenosVelocidade": "velocity",
+            "MenosPosicao": "position",
+            "MenosInclinacao": "inclination",
+        }
+        if command_name in dec_map:
+            return lambda param=dec_map[command_name]: self._start_decrement_thread(param)
+
+        # Parameter increment/decrement (button release - stop thread)
+        if command_name.endswith("Released"):
+            return self._stop_threads
+
+        # Max/Med/Min buttons
+        max_map = {
+            "MaxAceleracao": ("acceleration", lambda s: s.max_acceleration),
+            "MaxVelocidade": ("velocity", lambda s: s.max_velocity),
+            "MaxPosicao": ("position", lambda s: s.max_position),
+            "MaxInclinacao": ("inclination", lambda s: s.max_inclination),
+        }
+        if command_name in max_map:
+            param, getter = max_map[command_name]
+            return lambda p=param, g=getter: self._set_parameter(p, g(self))
+
+        med_map = {
+            "MedAceleracao": ("acceleration", "max_acceleration", "min_acceleration"),
+            "MedVelocidade": ("velocity", "max_velocity", "min_velocity"),
+            "MedPosicao": ("position", "max_position", "min_position"),
+            "MedInclinacao": ("inclination", "max_inclination", "min_inclination"),
+        }
+        if command_name in med_map:
+            param, max_attr, min_attr = med_map[command_name]
+            return lambda p=param, ma=max_attr, mi=min_attr: self._set_parameter(
+                p, lambda s: round((getattr(s, ma) + getattr(s, mi)) / 2, 1)
+            )
+
+        min_map = {
+            "MinAceleracao": ("acceleration", lambda s: s.min_acceleration),
+            "MinVelocidade": ("velocity", lambda s: s.min_velocity),
+            "MinPosicao": ("position", lambda s: s.min_position),
+            "MinInclinacao": ("inclination", lambda s: s.min_inclination),
+        }
+        if command_name in min_map:
+            param, getter = min_map[command_name]
+            return lambda p=param, g=getter: self._set_parameter(p, g(self))
+
+        # Execute command
+        if command_name == "Executar":
+            return self._handle_executar
+
+        # Database
+        if command_name == "LimparDB":
+            return self._handle_limpar_db
+
+        # ComboBox
+        if command_name == "ComboBox_Macros":
+            return self._handle_combo_macros
+
+        # Macro editor actions
+        if command_name == "DeletarAcao":
+            return self._handle_deletar_acao
+        if command_name == "RegistrarAcao":
+            return self._handle_registrar_acao
+        if command_name == "TestarMacro":
+            return self._handle_testar_macro
+        if command_name == "CancelarMacro":
+            return self._handle_cancelar_macro
+        if command_name == "RegistrarMacro":
+            return self._handle_registrar_macro
+
+        # Arduino
+        if command_name == "ArduinoConnect":
+            return self._handle_arduino_connect
+
+        return None
+
+    # ------------------------------------------------------------------
+    # Command handler implementations
+    # ------------------------------------------------------------------
+    def _handle_theme(self):
+        """Toggle between light and dark themes."""
+        self.theme_manager.toggle_theme()
+        self.background_style = self.theme_manager.current_theme_name
+        self._apply_theme()
+
+    def _execute_macro(self, macro_index):
+        """Execute a macro by index."""
+        self.macro_executor.execute(macro_index)
+
+    def _handle_gravar_macro(self):
+        """Enter macro recording mode."""
+        senha, done = QInputDialog.getText(self, "Gravar macro", "Senha:", QLineEdit.Password)
+        if done and senha == self.password:
+            self._switch_to_recording_mode()
+
+    def _handle_deletar_macro(self):
+        """Delete a macro."""
+        senha, done = QInputDialog.getText(self, "Deletar macro", "Senha:", QLineEdit.Password)
+        if not (done and senha == self.password):
+            return
+
+        macro_names = self.db_manager.get_macro_names()
+        macro_name, done = QInputDialog.getItem(
+            self, "Deletar Macro", "Macro a ser zerada:", macro_names, False
+        )
+        if not done:
+            return
+
+        idx = macro_names.index(macro_name)
+        # Check if the auto-generated name would conflict
+        other_names = [
+            name for i, name in enumerate(self.db_manager.get_macro_names())
+            if name == f"Macro{idx + 1}" and i != idx
+        ]
+        if other_names:
+            QMessageBox.warning(
+                self, "Erro",
+                f"Existe outra macro com o nome que essa deveria receber\n(Macro{idx + 1})"
+            )
+            return
+
+        self.db_manager.overwrite_macro(idx, [])
+        self.db_manager.set_macro_name(idx, f"Macro{idx + 1}")
+
+        # Refresh macro button names
+        self.macro_names = self.db_manager.get_macro_names()
+        for i, name in enumerate(self.macro_names):
+            if i < len(self._macro_buttons):
+                self._macro_buttons[i].setText(name)
+
+    # Mapping from parameter key to thread name suffix
+    _THREAD_NAMES = {
+        "acceleration": ("Thread_MaisAceleracao", "Thread_MenosAceleracao"),
+        "velocity": ("Thread_MaisVelocidade", "Thread_MenosVelocidade"),
+        "position": ("Thread_MaisPosicao", "Thread_MenosPosicao"),
+        "inclination": ("Thread_MaisInclinacao", "Thread_MenosInclinacao"),
+    }
+
+    def _start_increment_thread(self, param):
+        """Start a worker thread that increments a parameter."""
+        self.abort_thread = False
+        thread_name = self._THREAD_NAMES[param][0]
+        thread = WorkerThread(thread_name, self)
+        thread.start()
+
+    def _start_decrement_thread(self, param):
+        """Start a worker thread that decrements a parameter."""
+        self.abort_thread = False
+        thread_name = self._THREAD_NAMES[param][1]
+        thread = WorkerThread(thread_name, self)
+        thread.start()
+
+    def _stop_threads(self):
+        """Stop all worker threads."""
+        self.abort_thread = True
+
+    def _set_parameter(self, param, value_getter):
+        """Set a parameter to a specific value.
+
+        Parameters
+        ----------
+        param : str
+            Parameter name (e.g. 'acceleration').
+        value_getter : callable
+            Function that returns the target value, receiving self.
+        """
+        value = value_getter(self)
+        setattr(self, param, value)
+        self._text_boxes[param].setText(str(value))
+
+    def _handle_executar(self):
+        """Execute the current manual command."""
+        if not self.arduino_comm.connected:
+            QMessageBox.warning(self, "Erro", "Arduino nao conectado.")
+            return
+
+        success = self.arduino_comm.send_command([
+            self.position, self.velocity, self.acceleration, self.inclination, 0
+        ])
+        if success:
+            self.db_manager.write_on_db([self.position, self.velocity, self.acceleration, self.inclination])
+            self.history_table.clear()
+            self.history_data = self.db_manager.get_all_moves()[::-1]
+            setup_history_table(self.history_table, self.history_data, self.screen_width)
+            self.label_position.setText(f"Posicao atual\n{self.position}mm")
+            self.label_inclination.setText(f"Inclinacao atual\n{self.inclination}\u00b0")
+
+    def _handle_limpar_db(self):
+        """Clear the command history database."""
+        msg = QMessageBox()
+        msg.setWindowTitle("Limpar DB")
+        msg.setText("Tem certeza que deseja\nlimpar o historico de comandos?")
+        msg.setIcon(QMessageBox.Warning)
+        msg.setStandardButtons(QMessageBox.Yes | QMessageBox.Cancel)
+        msg.setDefaultButton(QMessageBox.Cancel)
+        msg.setWindowIcon(QIcon(ICON_PATH))
+
+        if msg.exec() == QMessageBox.Yes:
+            self.db_manager.clear_db()
+            self.history_table.clear()
+            self.history_data = []
+
+    def _handle_combo_macros(self):
+        """Handle macro name changes from the combobox."""
+        idx = self.macro_combobox.currentIndex()
+        new_name = self.macro_combobox.currentText()
+        if len(new_name) < 11:
+            existing = [n for n in self.db_manager.get_macro_names() if n == new_name]
+            if not existing:
+                self.db_manager.set_macro_name(idx, new_name)
+
+        # Refresh combobox
+        self.macro_combobox.clear()
+        for name in self.db_manager.get_macro_names():
+            self.macro_combobox.addItem(name)
+        self.macro_combobox.setCurrentIndex(idx)
+
+    def _handle_deletar_acao(self):
+        """Remove the last action from the macro editor."""
+        self.macro_data = self.macro_data[::-1][:-1][::-1]
+        self.macro_table.setRowCount(len(self.macro_data))
+        setup_macro_table(self.macro_table, self.macro_data, SCREEN_RATIOS["macro_panel_width"])
+
+    def _handle_registrar_acao(self):
+        """Add the last command to the macro editor."""
+        last_moves = self.db_manager.get_all_moves()
+        if not last_moves:
+            QMessageBox.warning(self, "Aviso", "Nao ha comando para registrar.")
+            return
+
+        last_move = last_moves[-1]
+        cycles = int(self._cycles_textbox.text().replace(" ciclos", ""))
+        new_entry = (last_move[0], last_move[1], last_move[2], last_move[3], 1.0, cycles)
+
+        self.macro_data = self.macro_data[::-1]
+        self.macro_data.append(new_entry)
+        self.macro_data = self.macro_data[::-1]
+
+        self.macro_table.setRowCount(len(self.macro_data))
+        setup_macro_table(self.macro_table, self.macro_data, SCREEN_RATIOS["macro_panel_width"])
+
+    def _handle_testar_macro(self):
+        """Test the current macro without recording."""
+        if not self.arduino_comm.connected:
+            QMessageBox.warning(self, "Erro", "Arduino nao conectado.")
+            return
+
+        commands = self.macro_data[::-1]
+        if not commands:
+            return
+
+        for cycle in range(commands[0][5]):
+            print(f"Ciclo {cycle + 1}")
+            for cmd in commands:
+                sleep(cmd[4])
+                self.arduino_comm.send_command([cmd[0], cmd[1], cmd[2], cmd[3], 0])
+
+    def _handle_cancelar_macro(self):
+        """Exit macro recording mode."""
+        self._switch_to_normal_mode()
+
+    def _handle_registrar_macro(self):
+        """Save the current macro."""
+        self.db_manager.overwrite_macro(self.macro_combobox.currentIndex(), self.macro_data)
+
+        idx = self.macro_combobox.currentIndex()
+        new_name = self.macro_combobox.currentText()
+        if len(new_name) < 11:
+            self.db_manager.set_macro_name(idx, new_name)
+
+        # Refresh macro button names
+        self.macro_names = self.db_manager.get_macro_names()
+        for i, name in enumerate(self.macro_names):
+            if i < len(self._macro_buttons):
+                self._macro_buttons[i].setText(name)
+
+        self._switch_to_normal_mode()
+
+    def _handle_arduino_connect(self):
+        """Prompt user to select an Arduino port."""
+        if sys.platform.startswith("win"):
+            ports = [f"COM{i + 1}" for i in range(256)]
+        elif sys.platform.startswith("linux") or sys.platform.startswith("cygwin"):
+            ports = glob.glob("/dev/tty[A-Za-z]*")
+        elif sys.platform.startswith("darwin"):
+            ports = glob.glob("/dev/tty.*")
+        else:
+            QMessageBox.warning(self, "Erro", "Plataforma nao suportada.")
+            return
+
+        available_ports = []
+        for port in ports:
+            try:
+                s = serial.Serial(port)
+                s.close()
+                available_ports.append(port)
+            except (OSError, Exception):
+                pass
+
+        if not available_ports:
+            QMessageBox.warning(self, "Erro", "Nenhuma porta serial detectada.")
+            return
+
+        port, done = QInputDialog.getItem(
+            self, "Porta", "Porta onde se encontra o Arduino:", available_ports, False
+        )
+        if done:
+            self.arduino_comm.connect(port)
+            if not self.arduino_comm.connected:
+                QMessageBox.warning(self, "Erro", "Impossivel se conectar ao arduino.")
             else:
-                self.Ciclos = 1
-                self.TextBox_Ciclos.setText(str(self.Ciclos))
-        except:
-            self.Ciclos = 1
-        finally:
-            self.dataMacro = self.dataMacro[::-1]
-            for idx, comando in enumerate(self.dataMacro):
-                self.dataMacro[idx] = (self.dataMacro[idx][0],self.dataMacro[idx][1],self.dataMacro[idx][2],self.dataMacro[idx][3],self.dataMacro[idx][4],self.Ciclos)
-            self.dataMacro = self.dataMacro[::-1]
+                self.db_manager.update_cache_port(port)
 
-#%% Resizing HMI
-    def eventFilter(self, obj, event): # Função pra redimensionar alguns elementos do IHM dinamicamente
+    # ------------------------------------------------------------------
+    # UI cleanup
+    # ------------------------------------------------------------------
+    def _clear_widgets(self):
+        """Delete all dynamically created widgets before rebuilding the UI."""
+        # Delete all stored widget references
+        for name, widget in list(self._widgets.items()):
+            if widget is not None:
+                widget.deleteLater()
+        self._widgets.clear()
+
+        # Delete macro buttons
+        for btn in getattr(self, "_macro_buttons", []):
+            btn.deleteLater()
+        self._macro_buttons = []
+
+        # Delete text boxes
+        for tb in getattr(self, "_text_boxes", {}).values():
+            tb.deleteLater()
+        self._text_boxes = {}
+
+        # Delete increment/decrement buttons
+        for btn in getattr(self, "_increment_buttons", {}).values():
+            btn.deleteLater()
+        for btn in getattr(self, "_decrement_buttons", {}).values():
+            btn.deleteLater()
+        self._increment_buttons = {}
+        self._decrement_buttons = {}
+
+        # Delete max/med/min buttons
+        for btn in getattr(self, "_max_buttons", {}).values():
+            btn.deleteLater()
+        for btn in getattr(self, "_med_buttons", {}).values():
+            btn.deleteLater()
+        for btn in getattr(self, "_min_buttons", {}).values():
+            btn.deleteLater()
+        self._max_buttons = {}
+        self._med_buttons = {}
+        self._min_buttons = {}
+
+        # Delete precision radios
+        for radio in getattr(self, "_precision_radios", []):
+            radio.deleteLater()
+        group = getattr(self, "_precision_group", None)
+        if group:
+            group.deleteLater()
+        self._precision_radios = []
+        self._precision_group = None
+
+        # Delete layout widgets from the grid
+        while self._grid.count():
+            item = self._grid.takeAt(0)
+            widget = item.widget()
+            if widget:
+                widget.deleteLater()
+
+    # ------------------------------------------------------------------
+    # Mode switching
+    # ------------------------------------------------------------------
+    def _switch_to_recording_mode(self):
+        """Switch to macro recording mode."""
+        self._clear_widgets()
+        self.recording_mode = "Gravar"
+        self._build_ui()
+
+    def _switch_to_normal_mode(self):
+        """Switch to normal mode."""
+        self._clear_widgets()
+        self.recording_mode = "normal"
+        self.macro_names = self.db_manager.get_macro_names()
+        self._build_ui()
+
+    # ------------------------------------------------------------------
+    # Value change handlers
+    # ------------------------------------------------------------------
+    def _on_value_changed(self, param_key, text):
+        """Handle text box value changes.
+
+        Parameters
+        ----------
+        param_key : str
+            Parameter name.
+        text : str
+            New text value.
+        """
+        limits = PARAM_LIMITS[param_key]
+        min_val = limits["min"]
+        max_val = limits["max"]
+
+        try:
+            # Extract numeric value from the text (strip unit suffix)
+            text_clean = text
+            for suffix in ["mm/s²", "mm/s", "mm", "°"]:
+                text_clean = text_clean.replace(suffix, "")
+
+            if not text_clean.strip():
+                return
+
+            value = float(text_clean)
+            clamped = _clamp(value, min_val, max_val)
+            setattr(self, param_key, round(clamped, 1))
+
+            # Update the text box if clamped
+            if clamped != value:
+                self._text_boxes[param_key].setText(str(clamped))
+
+            # Update database cache
+            cache_method_name = f"update_cache_{param_key}"
+            cache_method = getattr(self.db_manager, cache_method_name)
+            cache_method(round(clamped, 1))
+
+        except (ValueError, AttributeError):
+            pass
+
+    def _on_cycles_changed(self, text):
+        """Handle cycle count changes."""
+        try:
+            cycles_text = text.replace(" ciclos", "")
+            cycles = int(cycles_text)
+            if cycles < 0:
+                cycles = 1
+                self._cycles_textbox.setText(str(cycles))
+        except ValueError:
+            cycles = 1
+
+        # Update cycle count in all macro data entries
+        self.macro_data = self.macro_data[::-1]
+        for idx, cmd in enumerate(self.macro_data):
+            self.macro_data[idx] = (cmd[0], cmd[1], cmd[2], cmd[3], cmd[4], cycles)
+        self.macro_data = self.macro_data[::-1]
+
+    # ------------------------------------------------------------------
+    # Table data insertion helpers
+    # ------------------------------------------------------------------
+    def insert_data_in_history_table(self):
+        """Refresh the command history table."""
+        self.history_data = self.db_manager.get_all_moves()[::-1]
+        setup_history_table(self.history_table, self.history_data, self.screen_width)
+
+    # ------------------------------------------------------------------
+    # Event filter (resize handling)
+    # ------------------------------------------------------------------
+    def eventFilter(self, obj, event):
+        """Handle resize events to adjust widget sizes dynamically."""
         if event.type() == QEvent.Resize:
-            self.Label_10.setFixedHeight(int(self.screen_height/30))
-            self.Label_11.setFixedHeight(int(self.screen_height/30))
-            self.Button_Tema.setFixedWidth(int(self.screen_width/15))
-            self.Button_Macro1.setFixedSize(int(self.frameGeometry().height()*1/7),int(self.frameGeometry().height()*1/7))
-            self.Button_Macro2.setFixedSize(int(self.frameGeometry().height()*1/7),int(self.frameGeometry().height()*1/7))
-            self.Button_Macro3.setFixedSize(int(self.frameGeometry().height()*1/7),int(self.frameGeometry().height()*1/7))
-            self.Button_Macro4.setFixedSize(int(self.frameGeometry().height()*1/7),int(self.frameGeometry().height()*1/7))
-            self.Button_Macro5.setFixedSize(int(self.frameGeometry().height()*1/7),int(self.frameGeometry().height()*1/7))
-            self.Button_Macro6.setFixedSize(int(self.frameGeometry().height()*1/7),int(self.frameGeometry().height()*1/7))
-            self.Button_Macro7.setFixedSize(int(self.frameGeometry().height()*1/7),int(self.frameGeometry().height()*1/7))
-            self.Button_Macro8.setFixedSize(int(self.frameGeometry().height()*1/7),int(self.frameGeometry().height()*1/7))
-            self.Button_GravarMacro.setFixedHeight(int(self.screen_height/15))
-            self.Button_GravarMacro.setFixedWidth(int(self.frameGeometry().height()/7))
-            self.Button_DeletarMacro.setFixedHeight(int(self.screen_height/15))
-            self.Button_DeletarMacro.setFixedWidth(int(self.frameGeometry().height()/7))
-            self.Button_Executar.setFixedWidth(int(self.frameGeometry().width()/3))
-            self.TextBox_Aceleracao.setFixedWidth(int(self.frameGeometry().width()/10))
-            self.TextBox_Velocidade.setFixedWidth(int(self.frameGeometry().width()/10))
-            self.TextBox_Posicao.setFixedWidth(int(self.frameGeometry().width()/10))
-            self.TextBox_Inclinacao.setFixedWidth(int(self.frameGeometry().width()/10))
-            self.Table_Historico.setFixedWidth(int(self.frameGeometry().width()*0.3))
-
-            self.Button_DeletarAcao.setFixedWidth(int(self.frameGeometry().width()/7))
-            self.Button_RegistrarAcao.setFixedWidth(int(self.frameGeometry().width()/7))
-            self.Button_TestarMacro.setFixedWidth(int(self.frameGeometry().width()/7))
-            self.Button_RegistrarMacro.setFixedWidth(int(self.frameGeometry().width()/7))
-            self.Button_CancelarMacro.setFixedWidth(int(self.frameGeometry().width()/7))
-            self.TextBox_Ciclos.setFixedWidth(int(self.frameGeometry().width()/7))
-            self.ComboBox_Macros.setFixedWidth(int(self.frameGeometry().width()*2/7))
-            self.Table_Macro.setFixedWidth(int(self.frameGeometry().width()*2/7))
-
-            for i in range(5):
-                self.Table_Macro.setColumnWidth(i, int(self.frameGeometry().width()*2/7/5))
-
+            self._on_resize()
         return False
-#%% Keyboard listener
-    def tableOnkeyReleaseEvent(self, event):
-        if event.key() == Qt.Key_Return or event.key() == Qt.Key_Enter:
-            linha = self.dataMacro[self.Table_Macro.currentIndex().row()]
-            linha = (linha[0],linha[1],linha[2],linha[3],float(self.Table_Macro.currentItem().text()))
-            self.dataMacro[self.Table_Macro.currentIndex().row()] = linha
 
-#%% App starter
-class graphical_thread():
-    def __init__(self,):
-        self.mIHM = None
+    def _on_resize(self):
+        """Recompute sizes for widgets that depend on window dimensions."""
+        fw = self.frameGeometry().width()
+        fh = self.frameGeometry().height()
+
+        # Macro buttons
+        btn_size = int(fh * SCREEN_RATIOS["button_size"])
+        for btn in self._macro_buttons:
+            btn.setFixedSize(btn_size, btn_size)
+
+        # Theme button
+        theme_btn = self._widgets.get("theme_btn")
+        if theme_btn:
+            theme_btn.setFixedWidth(int(self.screen_width * SCREEN_RATIOS["theme_button_width"]))
+
+        # Text boxes
+        for textbox in self._text_boxes.values():
+            textbox.setFixedWidth(int(fw * SCREEN_RATIOS["text_field_width"]))
+
+        # History table
+        if hasattr(self, "history_table"):
+            self.history_table.setFixedWidth(int(fw * SCREEN_RATIOS["history_table_width"]))
+
+        # Macro table
+        if hasattr(self, "macro_table"):
+            self.macro_table.setFixedWidth(int(fw * SCREEN_RATIOS["macro_panel_width"]))
+            col_width = int(fw * SCREEN_RATIOS["macro_panel_width"] / 5)
+            for i in range(5):
+                self.macro_table.setColumnWidth(i, col_width)
+
+        # Cycle textbox
+        if hasattr(self, "_cycles_textbox"):
+            self._cycles_textbox.setFixedWidth(int(fw / 7))
+
+        # Macro combobox
+        if hasattr(self, "macro_combobox"):
+            self.macro_combobox.setFixedWidth(int(fw * SCREEN_RATIOS["macro_panel_width"]))
+
+    # ------------------------------------------------------------------
+    # Keyboard handler for macro table
+    # ------------------------------------------------------------------
+    def table_on_key_release_event(self, event):
+        """Handle key release in the macro table."""
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter):
+            row = self.macro_table.currentIndex().row()
+            col = self.macro_table.currentIndex().column()
+            if col == 4:  # Delay column
+                new_delay = float(self.macro_table.currentItem().text())
+                old = self.macro_data[row]
+                self.macro_data[row] = (old[0], old[1], old[2], old[3], new_delay)
+
+
+# ---------------------------------------------------------------------------
+# Application entry point
+# ---------------------------------------------------------------------------
+class GraphicalThread:
+    """Manages the Qt application lifecycle."""
+
+    def __init__(self):
+        self.mihm = None
         self.app = None
 
-    def run(self,):
+    def run(self):
+        """Start the application."""
         self.app = QApplication(sys.argv)
         self.app.setStyle("fusion")
         try:
-            self.mIHM = IHMmain()
+            self.mihm = IHMmain()
             self.app.exec_()
-            self.mIHM.ArduinoComm.Close()
-            self.mIHM.DBManager.Disconnect()
+            self.mihm.arduino_comm.close()
+            self.mihm.db_manager.disconnect()
         except Exception as error:
-            print('Erro crítico: \n',error)
-            self.mIHM.ArduinoComm.Close()
-            self.mIHM.DBManager.Disconnect()
+            print(f"Erro critico: \n{error}")
+            if self.mihm:
+                self.mihm.arduino_comm.close()
+                self.mihm.db_manager.disconnect()
             self.app.quit()
             sys.exit()
-            QCoreApplication.quit()
 
-mgraphical_thread = graphical_thread() # Debug
-mgraphical_thread.run() # Debug
+
+if __name__ == "__main__":
+    mgraphical_thread = GraphicalThread()
+    mgraphical_thread.run()

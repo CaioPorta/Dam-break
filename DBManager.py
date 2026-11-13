@@ -181,3 +181,70 @@ class DBManager(object):
         cursor = self.conn.cursor()
         retorno = list(cursor.execute("SELECT Port FROM Cache"))
         return str(retorno[0][0])
+
+    # -----------------------------------------------------------------------
+    # Pythonic snake_case aliases (PEP 8)
+    # -----------------------------------------------------------------------
+
+    def get_macro_names(self):
+        return self.GetMacroNames()
+
+    def get_macro_moves(self, macro_id):
+        return self.GetMacroMoves(macro_id)
+
+    def get_all_moves(self):
+        return self.GetAllMoves()
+
+    def write_on_db(self, comando):
+        return self.WriteOnDB(comando)
+
+    def clear_db(self):
+        return self.ClearDB()
+
+    def set_macro_name(self, macro_id, name):
+        return self.SetMacroName(macro_id, name)
+
+    def delete_macro(self, macro_id):
+        return self.DeleteMacro(macro_id)
+
+    def overwrite_macro(self, macro_id, comandos):
+        return self.OverwriteMacro(macro_id, comandos)
+
+    def get_cache_precision(self):
+        return self.GetCache_Precisao()
+
+    def get_cache_acceleration(self):
+        return self.GetCache_Aceleracao()
+
+    def get_cache_velocity(self):
+        return self.GetCache_Velocidade()
+
+    def get_cache_position(self):
+        return self.GetCache_Posicao()
+
+    def get_cache_inclination(self):
+        return self.GetCache_Inclinacao()
+
+    def get_cache_port(self):
+        return self.GetCache_Port()
+
+    def update_cache_precision(self, value):
+        return self.UpdateCache_Precisao(value)
+
+    def update_cache_acceleration(self, value):
+        return self.UpdateCache_Aceleracao(value)
+
+    def update_cache_velocity(self, value):
+        return self.UpdateCache_Velocidade(value)
+
+    def update_cache_position(self, value):
+        return self.UpdateCache_Posicao(value)
+
+    def update_cache_inclination(self, value):
+        return self.UpdateCache_Inclinacao(value)
+
+    def update_cache_port(self, value):
+        return self.UpdateCache_Port(value)
+
+    def disconnect(self):
+        return self.Disconnect()
