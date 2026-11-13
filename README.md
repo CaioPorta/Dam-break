@@ -1,14 +1,15 @@
-# Dam break Project
+# Dam Break Project
 
-Project developed to UNESP-FEIS. 
-It is about the study of non-newtonian liquids through a dam break. 
-The system is controled by a gate and a inclined chanel. 
-The HMI has been made using Python (PyQt5). 
-The control its self has been made using Arduino UNO and some peripherals such as step motors, pneumatic system and end-switches.
+Project developed for UNESP-FES. It is about the study of non-Newtonian liquids through a dam break.
+The system is controlled by a gate and an inclined channel.
+The HMI has been made using Python (PyQt5).
+The control itself has been made using Arduino UNO and some peripherals such as step motors, pneumatic system, and end-switches.
 
+---
 
-Introduction to dam break study according to Hong Kong University of Science and Technology:
-Dam break refers to the collapse of an infinite or finite volume of fluid, particles or their mixture onto a horizontal or inclined channel.
+## Introduction to Dam Break Study
+
+Dam break refers to the collapse of an infinite or finite volume of fluid, particles, or their mixture onto a horizontal or inclined channel.
 It represents a wide range of practical problems that are of great engineering importance. The collapse of water-reserving dams or earth-filling
 tailings dams are among the most widely known examples. The failure of these dams may cause catastrophic damages to both human life and properties. For
 example, the overflow of reservoir water of Vajont dam in Italy caused by a landslide in 1963 killed 1910 people. More recently, the collapse of Situ
@@ -25,17 +26,17 @@ break considered the collapse of either pure fluids or dry particles, with only 
 placed on the collapsing of a mixture composed by granular particles and non-Newtonian fluids, in reference to engineering problems relevant to tailings
 dams or environmental flows such as volcanic lava, slurry and mud flows wherein the fluid involved is typically non-Newtonian [21]. Dam break of pure
 non-Newtonian fluids such as slurry and gel has been studied in [13, 14]. Other examples involving non-Newtonian fluids include the slump tests on fresh
-concrete in civil engineering and Bostwick tests for salad dressings in food industry.  Consideration of nonNewtonian fluids indeed enables better
+concrete in civil engineering and Bostwick tests for salad dressings in food industry. Consideration of non-Newtonian fluids indeed enables better
 explorations of more complex natural flows such as slurry than considering Newtonian fluids like water only. Conventional continuum-based studies on dam
 break have commonly considered a particle-fluid mixture as an equivalent fluid or two fluids. They have largely neglected the intricate interactions
 between the fluid and the particle phases which could affect significantly the collapse behavior of the mixture. In this study, a coupled CFD-DEM approach
-is employed to investigatethe collapse of a mixture consisting of fluid and particles, where we will demonstrate that fluid-particle interactions within
+is employed to investigate the collapse of a mixture consisting of fluid and particles, where we will demonstrate that fluid-particle interactions within
 the mixture can be well captured. The CFD and DEM are used to model the fluid and particle phases in the mixture, respectively. The interactions between
 the fluid and particles are considered by exchanging fluid-particle interaction forces between the CFD and DEM computations. The coupled CFD-DEM simulations
 can capture both micro and macro flow characteristics during dam break, which could offer new insights into the microstructural origins underpinning
 macroscopic collapse and flow of a mixture.
 
-https://jzhao.people.ust.hk/home/PDFs/Dambreak-PT2018.pdf
+[Reference](https://jzhao.people.ust.hk/home/PDFs/Dambreak-PT2018.pdf)
 
 ---
 
@@ -47,6 +48,7 @@ down an inclined channel. It bridges computational fluid dynamics experiments wi
 ### What It Does
 
 The application provides a graphical interface (HMI) that controls a physical experimental setup consisting of:
+
 - **A gate mechanism** - controls the release of fluid material
 - **An inclined channel** - where the dam break flow occurs
 - **Step motors** - for precise positioning and angle adjustment
@@ -55,14 +57,40 @@ The application provides a graphical interface (HMI) that controls a physical ex
 
 ### Architecture
 
-The system is composed of four main Python modules:
+```
+Dam-break/
+├── src/                          # Python source code
+│   ├── Dambreak.py              # Main PyQt5 HMI application
+│   ├── config.py                # Configuration & constants
+│   ├── ArduinoComm.py           # Serial communication layer
+│   ├── DBManager.py             # SQLite database management
+│   ├── WorkerThread.py          # Background threading
+│   ├── ui_components.py         # UI component helpers
+│   ├── macro_manager.py         # Macro execution logic
+│   └── Dambreak.spec            # PyInstaller spec file
+├── images/                       # UI assets & icons
+├── arduino/                      # Arduino sketches
+│   └── TESTE_ARDUINO/
+├── data/                         # Database
+│   └── Database_Dambreak.db
+├── docs/                         # Documentation
+│   └── Guia de desenvolvimento/
+├── Dambreak_IHM_icon.ico         # Application icon
+├── Gerador de Executavel.txt     # Build instructions
+└── README.md
+```
+
+### Key Modules
 
 | Module | Purpose |
 |--------|---------|
 | `Dambreak.py` | Main PyQt5 HMI application - the user interface with macro management, manual control, and status monitoring |
 | `ArduinoComm.py` | Serial communication layer - sends control commands (position, velocity, acceleration, inclination) to the Arduino UNO via USB |
-| `DBManager.py` | Data persistence layer - manages an SQLite database (`Database_Dambreak.db`) for storing macros, command history, and application cache |
+| `DBManager.py` | Data persistence layer - manages an SQLite database (`data/Database_Dambreak.db`) for storing macros, command history, and application cache |
 | `WorkerThread.py` | Background threading - handles continuous value adjustments (increment/decrement) for acceleration, velocity, position, and inclination without blocking the UI |
+| `config.py` | Centralized configuration - parameter limits, screen ratios, themes, fonts, paths, and constants |
+| `ui_components.py` | UI helper functions - creates styled buttons, labels, textboxes, and layout components |
+| `macro_manager.py` | Macro execution engine - handles recording, saving, and playback of macro sequences |
 
 ### Key Features
 
@@ -83,18 +111,43 @@ Commands are sent to the Arduino as binary strings encoded in UTF-8. Each parame
 - pyserial
 - SQLite3 (built-in)
 
+### Running the Application
+
+```bash
+cd src
+python Dambreak.py
+```
+
 ### Building the Executable
 
-```
-pyinstaller --onefile --noconsole -i .\Dambreak_IHM_icon.ico Dambreak.py
+```bash
+# From project root
+pyinstaller --onefile --noconsole -i Dambreak_IHM_icon.ico src\Dambreak.py
 ```
 
 The compiled executable is located at `dist/Dambreak.exe`.
 
-### Development Notes
+> **Note:** See `Gerador de Executavel.txt` for detailed build instructions.
 
-- Author: Caio Moreira Porta (CaioPorta)
-- Created: November 2021
-- For: Professor Geraldo de Freitas Maciel - UNESP/FEIS
-- Version: Alpha 0.0.1
-- Last modified: December 3, 2021
+### Project Structure
+
+| Directory/File | Description |
+|----------------|-------------|
+| `src/` | All Python source code |
+| `images/` | UI assets (icons, logos, theme images) |
+| `arduino/` | Arduino test sketches |
+| `data/` | SQLite database file |
+| `docs/` | Development documentation and guides |
+| `build/` | PyInstaller build artifacts (generated) |
+| `dist/` | Distribution output including executable (generated) |
+| `__pycache__/` | Python bytecode cache (generated) |
+
+---
+
+## Development Notes
+
+- **Author:** Caio Moreira Porta (CaioPorta)
+- **Created:** November 2021
+- **For:** Professor Geraldo de Freitas Maciel - UNESP/FEIS
+- **Version:** Alpha 0.0.1
+- **Last modified:** December 3, 2021
