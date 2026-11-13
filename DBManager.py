@@ -2,18 +2,9 @@
 """
 Created on Tue Nov 23 21:46:58 2021
 
-@author: caiop
+@author: Caio Moreira Porta
 """
-import os
-from os.path import exists
-import sys
-import copy
-import time
-from datetime import datetime
-from datetime import timedelta
-
 import sqlite3
-from sqlite3 import Error
 
 class DBManager(object):
     def __init__(self, HMI):

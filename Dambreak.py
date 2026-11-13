@@ -14,7 +14,6 @@ from PyQt5.QtCore import *
 
 from time import sleep
 
-import os
 import sys
 import ctypes
 import csv
