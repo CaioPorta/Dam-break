@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 Created on Tue Nov 23 15:49:21 2021
-@author: CaioPorta
+@author: Caio Moreira Porta
 
 Feito para Professor Geraldo de Freitas Maciel
 UNESP - FEIS
